@@ -3,6 +3,7 @@
 
 # Database
 *.db
+secret_santa_bot/secret_santa_bot/secret_santa.db
 
 # Logs
 *.log
