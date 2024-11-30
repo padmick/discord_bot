@@ -1,5 +1,6 @@
 import sqlite3
 from typing import Dict, List, Optional
+import random
 
 class DatabaseManager:
     def __init__(self, db_name: str = "secret_santa.db"):
@@ -60,3 +61,78 @@ class DatabaseManager:
 
     def close_connection(self):
         self.conn.close()
+
+    def get_gifter_for_user(self, user_id: str) -> Optional[str]:
+        """Get the ID of the person giving a gift to the specified user"""
+        self.cursor.execute("""
+            SELECT giver_id FROM pairings WHERE receiver_id = ?
+        """, (user_id,))
+        result = self.cursor.fetchone()
+        return result[0] if result else None
+
+    def get_giftee_for_user(self, user_id: str) -> Optional[str]:
+        """Get the ID of the person receiving a gift from the specified user"""
+        self.cursor.execute("""
+            SELECT receiver_id FROM pairings WHERE giver_id = ?
+        """, (user_id,))
+        result = self.cursor.fetchone()
+        return result[0] if result else None
+
+    def get_partner_info(self, user_id: str) -> Optional[Dict[str, str]]:
+        """Get information about the user's gift recipient"""
+        self.cursor.execute("""
+            SELECT p.name, p.wishlist
+            FROM pairings 
+            JOIN participants p ON p.user_id = pairings.receiver_id
+            WHERE giver_id = ?
+        """, (user_id,))
+        result = self.cursor.fetchone()
+        return {'name': result[0], 'wishlist': result[1] or "No wishlist set"} if result else None
+
+    def assign_partners(self, participants: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """
+        Assign Secret Santa partners and store in database
+        Returns list of pairings with giver, receiver, and receiver's wishlist
+        """
+        if len(participants) < 2:
+            raise ValueError("Need at least 2 participants to create pairings")
+            
+        # Clear existing pairings
+        self.cursor.execute("DELETE FROM pairings")
+        
+        # Create a copy of participants for receivers
+        receivers = participants.copy()
+        pairings = []
+        
+        for giver in participants:
+            # Find valid receivers (excluding self)
+            valid_receivers = [r for r in receivers if r['user_id'] != giver['user_id']]
+            
+            if not valid_receivers:
+                # If no valid receivers, reset and try again
+                return self.assign_partners(participants)
+            
+            # Randomly select a receiver
+            receiver = random.choice(valid_receivers)
+            receivers.remove(receiver)
+            
+            # Store pairing in database
+            self.cursor.execute("""
+                INSERT INTO pairings (giver_id, receiver_id)
+                VALUES (?, ?)
+            """, (giver['user_id'], receiver['user_id']))
+            
+            # Add to pairings list
+            pairings.append({
+                'giver': giver['user_id'],
+                'receiver': receiver['user_id'],
+                'receiver_wishlist': receiver.get('wishlist', "No wishlist set")
+            })
+        
+        self.conn.commit()
+        return pairings
+
+    def cancel_secret_santa(self):
+        """Cancel the Secret Santa event by clearing all pairings"""
+        self.cursor.execute("DELETE FROM pairings")
+        self.conn.commit()

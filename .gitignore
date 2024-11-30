@@ -1,1 +1,4 @@
 secret_santa_bot/.env
+secret_santa_bot/secret_santa.db
+secret_santa_bot/secret_santa.log
+secret_santa_bot/src/__pycache__/database.cpython-310.pyc
