@@ -38,7 +38,15 @@ class SecretSantaCog(commands.Cog):
     async def create_secret_santa(self, ctx):
         """Create a new Secret Santa event"""
         log_event("CREATE", f"New Secret Santa event created in server {ctx.guild.id}")
-        await ctx.send("Secret Santa event created!")
+        
+        create_msg = (
+            f"🎄 {ctx.author.name} has started a Secret Santa event! 🎅\n\n"
+            "To join the Secret Santa:\n"
+            "1. Use `s!join` in this channel or DM the bot\n"
+            "2. You'll receive instructions to set your wishlist and address\n\n"
+            "Once everyone has joined and set their preferences, use `s!start` to begin!"
+        )
+        await ctx.send(create_msg)
 
     @commands.command(name='join')
     async def join_secret_santa(self, ctx):
