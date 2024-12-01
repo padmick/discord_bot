@@ -155,10 +155,17 @@ class SecretSantaCog(commands.Cog):
             receiver = self.bot.get_user(int(pairing['receiver']))
             
             if giver and receiver:
-                await giver.send(f"Your Secret Santa is: {receiver.name}\nTheir wishlist: {pairing['receiver_wishlist']}")
+                partner_msg = (
+                    f"🎄 Your Secret Santa match:\n\n"
+                    f"**Recipient:** {receiver.name}\n"
+                    f"**Wishlist:** {pairing['receiver_wishlist']}\n"
+                    f"**Delivery Address:** {pairing['receiver_address']}\n\n"
+                    "You can message them anonymously using `s!message giftee <your message>`"
+                )
+                await giver.send(partner_msg)
         
         log_event("START", f"Secret Santa started in server {ctx.guild.id}")
-        await ctx.send("Pairings have been sent to participants!")
+        await ctx.send("🎅 Secret Santa has begun! All participants have received their matches via DM!")
 
     @commands.command(name='cancel')
     async def cancel_secret_santa(self, ctx):

@@ -9,13 +9,13 @@ class DatabaseManager:
         self.create_tables()
 
     def create_tables(self):
+        # Create initial tables
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS participants (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT UNIQUE,
                 name TEXT,
-                wishlist TEXT,
-                address TEXT
+                wishlist TEXT
             )
         """)
         self.cursor.execute("""
@@ -27,6 +27,13 @@ class DatabaseManager:
                 FOREIGN KEY(receiver_id) REFERENCES participants(user_id)
             )
         """)
+        
+        # Check if address column exists, if not add it
+        self.cursor.execute("PRAGMA table_info(participants)")
+        columns = [column[1] for column in self.cursor.fetchall()]
+        if 'address' not in columns:
+            self.cursor.execute("ALTER TABLE participants ADD COLUMN address TEXT")
+        
         self.conn.commit()
 
     def add_participant(self, user_id: str, name: str):
@@ -93,11 +100,11 @@ class DatabaseManager:
     def assign_partners(self, participants: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
         Assign Secret Santa partners and store in database
-        Returns list of pairings with giver, receiver, and receiver's wishlist
+        Returns list of pairings with giver, receiver, and receiver's info
         """
         if len(participants) < 2:
             raise ValueError("Need at least 2 participants to create pairings")
-            
+        
         # Clear existing pairings
         self.cursor.execute("DELETE FROM pairings")
         
@@ -117,6 +124,11 @@ class DatabaseManager:
             receiver = random.choice(valid_receivers)
             receivers.remove(receiver)
             
+            # Get receiver's address
+            self.cursor.execute("SELECT address FROM participants WHERE user_id = ?", (receiver['user_id'],))
+            address_result = self.cursor.fetchone()
+            receiver_address = address_result[0] if address_result else "No address set"
+            
             # Store pairing in database
             self.cursor.execute("""
                 INSERT INTO pairings (giver_id, receiver_id)
@@ -127,7 +139,8 @@ class DatabaseManager:
             pairings.append({
                 'giver': giver['user_id'],
                 'receiver': receiver['user_id'],
-                'receiver_wishlist': receiver.get('wishlist', "No wishlist set")
+                'receiver_wishlist': receiver.get('wishlist', "No wishlist set"),
+                'receiver_address': receiver_address
             })
         
         self.conn.commit()
