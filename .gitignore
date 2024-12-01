@@ -3,7 +3,7 @@
 
 # Database
 *.db
-secret_santa_bot/secret_santa_bot/secret_santa.db
+~/secret_santa_bot/secret_santa_bot/secret_santa.db
 
 # Logs
 *.log
@@ -23,3 +23,9 @@ venv/
 env/
 .env/
 .venv/
+
+~/secret_santa_bot/secret_santa.db
+~/secret_santa_bot/secret_santa.log
+~/*/secret_santa.cpython-310.pyc
+secret_santa_bot/src/__pycache__/database.cpython-310.pyc
+secret_santa_bot/src/cogs/__pycache__/secret_santa.cpython-310.pyc

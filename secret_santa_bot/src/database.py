@@ -14,7 +14,8 @@ class DatabaseManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT UNIQUE,
                 name TEXT,
-                wishlist TEXT
+                wishlist TEXT,
+                address TEXT
             )
         """)
         self.cursor.execute("""
@@ -136,3 +137,25 @@ class DatabaseManager:
         """Cancel the Secret Santa event by clearing all pairings"""
         self.cursor.execute("DELETE FROM pairings")
         self.conn.commit()
+
+    def set_address(self, user_id: str, address: str):
+        self.cursor.execute("""
+            UPDATE participants SET address = ?
+            WHERE user_id = ?
+        """, (address, user_id))
+        self.conn.commit()
+
+    def check_missing_info(self) -> List[Dict[str, str]]:
+        """Returns list of users with missing wishlist or address"""
+        self.cursor.execute("""
+            SELECT user_id, name, wishlist, address
+            FROM participants
+            WHERE wishlist IS NULL OR address IS NULL
+        """)
+        rows = self.cursor.fetchall()
+        return [{
+            'user_id': row[0],
+            'name': row[1],
+            'missing_wishlist': row[2] is None,
+            'missing_address': row[3] is None
+        } for row in rows]

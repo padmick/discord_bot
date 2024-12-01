@@ -16,7 +16,8 @@ class CustomHelpCommand(commands.DefaultHelpCommand):
         help_text += "s!message - Send a message to your Secret Santa partner\n"
         help_text += "s!start - Start the Secret Santa event\n"
         help_text += "s!cancel - Cancel the Secret Santa event\n"
-        help_text += "s!info - Display bot information"
+        help_text += "s!info - Display bot information\n"
+        help_text += "s!setaddress - Set your delivery address\n"
         
         await self.get_destination().send(help_text)
 
@@ -47,6 +48,16 @@ class SecretSantaCog(commands.Cog):
         self.db_manager.add_participant(user_id, name)
         log_event("JOIN", f"{name} joined the Secret Santa event")
         await ctx.send(f"{name}, you've joined the Secret Santa!")
+        
+        # Send DM with instructions
+        welcome_msg = (
+            "Welcome to Secret Santa! 🎅\n\n"
+            "Please set up your preferences:\n"
+            "1. Set your wishlist with `s!setwishlist <your wishlist>`\n"
+            "2. Set your address with `s!setaddress <your address>`\n\n"
+            "Both are required before the event can start!"
+        )
+        await ctx.author.send(welcome_msg)
 
     @commands.command(name='setwishlist')
     async def set_wishlist(self, ctx, *, wishlist):
@@ -103,6 +114,29 @@ class SecretSantaCog(commands.Cog):
             await ctx.send("At least two participants are required.")
             return
         
+        # Check for missing information
+        missing_info = self.db_manager.check_missing_info()
+        if missing_info:
+            await ctx.send("Cannot start - some users haven't set their preferences!")
+            
+            # DM users with missing information
+            for user in missing_info:
+                member = self.bot.get_user(int(user['user_id']))
+                if member:
+                    missing_items = []
+                    if user['missing_wishlist']:
+                        missing_items.append("wishlist (use s!setwishlist)")
+                    if user['missing_address']:
+                        missing_items.append("address (use s!setaddress)")
+                    
+                    missing_msg = (
+                        "⚠️ The Secret Santa event cannot start because you haven't set your:\n"
+                        f"{', '.join(missing_items)}\n"
+                        "Please set these to allow the event to start!"
+                    )
+                    await member.send(missing_msg)
+            return
+        
         pairings = self.db_manager.assign_partners(participants)
         for pairing in pairings:
             giver = self.bot.get_user(int(pairing['giver']))
@@ -120,6 +154,14 @@ class SecretSantaCog(commands.Cog):
         self.db_manager.cancel_secret_santa()
         log_event("CANCEL", f"Secret Santa cancelled in server {ctx.guild.id}")
         await ctx.send("Secret Santa event cancelled!")
+
+    @commands.command(name='setaddress')
+    async def set_address(self, ctx, *, address):
+        """Set your address for gift delivery"""
+        user_id = str(ctx.author.id)
+        self.db_manager.set_address(user_id, address)
+        log_event("ADDRESS", f"{ctx.author.name} set their address")
+        await ctx.send("Address set successfully! (Only your Secret Santa will see this)")
 
 async def setup(bot):
     await bot.add_cog(SecretSantaCog(bot))
