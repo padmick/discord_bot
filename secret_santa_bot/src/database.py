@@ -134,9 +134,16 @@ class DatabaseManager:
         return pairings
 
     def cancel_secret_santa(self):
-        """Cancel the Secret Santa event by clearing all pairings"""
+        """Cancel the Secret Santa event by clearing all data"""
         self.cursor.execute("DELETE FROM pairings")
+        self.cursor.execute("DELETE FROM participants")
         self.conn.commit()
+
+    def is_event_active(self) -> bool:
+        """Check if there's an active Secret Santa event"""
+        self.cursor.execute("SELECT COUNT(*) FROM participants")
+        count = self.cursor.fetchone()[0]
+        return count > 0
 
     def set_address(self, user_id: str, address: str):
         self.cursor.execute("""

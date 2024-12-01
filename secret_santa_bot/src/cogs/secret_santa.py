@@ -37,6 +37,10 @@ class SecretSantaCog(commands.Cog):
     @commands.command(name='create')
     async def create_secret_santa(self, ctx):
         """Create a new Secret Santa event"""
+        if self.db_manager.is_event_active():
+            await ctx.send("❌ A Secret Santa event is already in progress! Cancel it first with `s!cancel`")
+            return
+        
         log_event("CREATE", f"New Secret Santa event created in server {ctx.guild.id}")
         
         create_msg = (
@@ -159,9 +163,13 @@ class SecretSantaCog(commands.Cog):
     @commands.command(name='cancel')
     async def cancel_secret_santa(self, ctx):
         """Cancel the Secret Santa event"""
+        if not self.db_manager.is_event_active():
+            await ctx.send("❌ There is no active Secret Santa event to cancel!")
+            return
+        
         self.db_manager.cancel_secret_santa()
         log_event("CANCEL", f"Secret Santa cancelled in server {ctx.guild.id}")
-        await ctx.send("Secret Santa event cancelled!")
+        await ctx.send("🎄 Secret Santa event cancelled! Use `s!create` to start a new one.")
 
     @commands.command(name='setaddress')
     async def set_address(self, ctx, *, address):
