@@ -21,7 +21,13 @@ class CustomHelpCommand(commands.DefaultHelpCommand):
         help_text += "s!remind - Send reminders to participants with missing info\n"
         help_text += "s!info - Display bot information"
         
-        await self.get_destination().send(help_text)
+        # Split into multiple messages if too long
+        if len(help_text) > 1900:  # Leave room for Discord markdown
+            messages = [help_text[i:i+1900] for i in range(0, len(help_text), 1900)]
+            for msg in messages:
+                await self.get_destination().send(msg)
+        else:
+            await self.get_destination().send(help_text)
 
 class SecretSantaCog(commands.Cog):
     def __init__(self, bot):
@@ -48,7 +54,7 @@ class SecretSantaCog(commands.Cog):
         log_event("CREATE", f"New Secret Santa event created by {ctx.author.name} in server {ctx.guild.id}")
         
         create_msg = (
-            f"🎄 {ctx.author.name} has started a Secret Santa event! 🎅\n\n"
+            f"🎄 {ctx.author.name[:50]} has started a Secret Santa event! 🎅\n\n"
             "To join the Secret Santa:\n"
             "1. Use `s!join` in this channel or DM the bot\n"
             "2. You'll receive instructions to set your wishlist and address\n\n"
@@ -77,11 +83,28 @@ class SecretSantaCog(commands.Cog):
 
     @commands.command(name='setwishlist')
     async def set_wishlist(self, ctx, *, wishlist):
-        """Set your gift preferences"""
+        """Set your wishlist"""
+        if len(wishlist) > 1000:  # Setting a reasonable limit for wishlists
+            await ctx.send("❌ Wishlist is too long! Please keep it under 1000 characters.")
+            return
+            
         user_id = str(ctx.author.id)
-        self.db_manager.set_wishlist(user_id, wishlist)
-        log_event("WISHLIST", f"{ctx.author.name} set their wishlist")
-        await ctx.send(f"Wishlist set for {ctx.author.name}")
+        try:
+            self.db_manager.set_wishlist(user_id, wishlist)
+            log_event("WISHLIST", f"{ctx.author.name} set their wishlist")
+            await ctx.send("✅ Wishlist set successfully!")
+            
+            # Check if this completes their required info
+            missing_info = self.db_manager.check_missing_info()
+            user_missing = next((user for user in missing_info if user['user_id'] == user_id), None)
+            if user_missing:
+                if user_missing['missing_address']:
+                    await ctx.send("ℹ️ Don't forget to set your address using `s!setaddress`!")
+            else:
+                await ctx.send("🎄 Great! You've completed all required information!")
+        except Exception as e:
+            await ctx.send("❌ Error setting wishlist. Please try again with a shorter wishlist.")
+            print(f"Error setting wishlist: {e}")
 
     @commands.command(name='partnerinfo')
     async def get_partner_info(self, ctx):
@@ -97,8 +120,14 @@ class SecretSantaCog(commands.Cog):
     async def list_participants(self, ctx):
         """List all participants in the Secret Santa"""
         participants = self.db_manager.get_all_participants()
-        participant_list = '\n'.join([f"- {p['name']}" for p in participants])
-        await ctx.send(f"Participants:\n{participant_list}")
+        participant_list = '\n'.join([f"- {p['name'][:50]}" for p in participants])
+        
+        if len(participant_list) > 1900:
+            chunks = [participant_list[i:i+1900] for i in range(0, len(participant_list), 1900)]
+            for i, chunk in enumerate(chunks, 1):
+                await ctx.send(f"Participants (Part {i}/{len(chunks)}):\n{chunk}")
+        else:
+            await ctx.send(f"Participants:\n{participant_list}")
 
     @commands.command(name='message')
     async def send_message(self, ctx, recipient_type=None, *, message=None):
@@ -259,10 +288,27 @@ class SecretSantaCog(commands.Cog):
     @commands.command(name='setaddress')
     async def set_address(self, ctx, *, address):
         """Set your address for gift delivery"""
+        if len(address) > 1000:  # Setting a reasonable limit for addresses
+            await ctx.send("❌ Address is too long! Please keep it under 1000 characters.")
+            return
+            
         user_id = str(ctx.author.id)
-        self.db_manager.set_address(user_id, address)
-        log_event("ADDRESS", f"{ctx.author.name} set their address")
-        await ctx.send("Address set successfully! (Only your Secret Santa will see this)")
+        try:
+            self.db_manager.set_address(user_id, address)
+            log_event("ADDRESS", f"{ctx.author.name} set their address")
+            await ctx.send("✅ Address set successfully! (Only your Secret Santa will see this)")
+            
+            # Check if this completes their required info
+            missing_info = self.db_manager.check_missing_info()
+            user_missing = next((user for user in missing_info if user['user_id'] == user_id), None)
+            if user_missing:
+                if user_missing['missing_wishlist']:
+                    await ctx.send("ℹ️ Don't forget to set your wishlist using `s!setwishlist`!")
+            else:
+                await ctx.send("🎄 Great! You've completed all required information!")
+        except Exception as e:
+            await ctx.send("❌ Error setting address. Please try again with a shorter address.")
+            print(f"Error setting address: {e}")
 
     @commands.command(name='myinfo')
     async def view_my_info(self, ctx):

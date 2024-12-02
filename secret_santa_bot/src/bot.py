@@ -38,9 +38,11 @@ def check_permissions(ctx):
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
-        await ctx.send(f"Command not found. Use `s!help` to see available commands.")
+        await ctx.send("Command not found. Use `s!help` to see available commands.")
     else:
+        error_msg = str(error)[:900]  # Limit error message length
         print(f"Error: {error}")
+        await ctx.send(f"❌ An error occurred: {error_msg}")
 
 async def setup():
     await bot.load_extension('cogs.secret_santa')
