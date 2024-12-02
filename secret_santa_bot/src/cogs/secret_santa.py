@@ -65,6 +65,11 @@ class SecretSantaCog(commands.Cog):
     @commands.command(name='join')
     async def join_secret_santa(self, ctx):
         """Join the Secret Santa event"""
+        # Check if there's an active event
+        if not self.db_manager.is_event_active():
+            await ctx.send("❌ There is no active Secret Santa event! Ask an admin to create one with `s!create`")
+            return
+            
         user_id = str(ctx.author.id)
         name = ctx.author.name
         self.db_manager.add_participant(user_id, name)
