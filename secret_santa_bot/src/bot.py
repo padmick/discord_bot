@@ -10,7 +10,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix='s!', intents=intents)
+bot = commands.Bot(
+    command_prefix=commands.when_mentioned_or('s!', 'S!'), 
+    case_insensitive=True,
+    intents=intents
+)
 bot.help_command = CustomHelpCommand()
 
 @bot.event
