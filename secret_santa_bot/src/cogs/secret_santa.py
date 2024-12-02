@@ -41,7 +41,9 @@ class SecretSantaCog(commands.Cog):
             await ctx.send("❌ A Secret Santa event is already in progress! Cancel it first with `s!cancel`")
             return
         
-        log_event("CREATE", f"New Secret Santa event created in server {ctx.guild.id}")
+        # Add creator as first participant
+        self.db_manager.add_participant(str(ctx.author.id), ctx.author.name, is_creator=True)
+        log_event("CREATE", f"New Secret Santa event created by {ctx.author.name} in server {ctx.guild.id}")
         
         create_msg = (
             f"🎄 {ctx.author.name} has started a Secret Santa event! 🎅\n\n"
@@ -176,8 +178,16 @@ class SecretSantaCog(commands.Cog):
             await ctx.send("❌ There is no active Secret Santa event to cancel!")
             return
         
+        # Check if user is admin or creator
+        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
+        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
+        
+        if not (is_admin or is_creator):
+            await ctx.send("❌ Only the event creator or server administrators can cancel the Secret Santa!")
+            return
+        
         self.db_manager.cancel_secret_santa()
-        log_event("CANCEL", f"Secret Santa cancelled in server {ctx.guild.id}")
+        log_event("CANCEL", f"Secret Santa cancelled by {ctx.author.name} in server {ctx.guild.id}")
         await ctx.send("🎄 Secret Santa event cancelled! Use `s!create` to start a new one.")
 
     @commands.command(name='setaddress')

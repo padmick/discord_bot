@@ -28,19 +28,21 @@ class DatabaseManager:
             )
         """)
         
-        # Check if address column exists, if not add it
+        # Check if address and is_creator columns exist, if not add them
         self.cursor.execute("PRAGMA table_info(participants)")
         columns = [column[1] for column in self.cursor.fetchall()]
         if 'address' not in columns:
             self.cursor.execute("ALTER TABLE participants ADD COLUMN address TEXT")
+        if 'is_creator' not in columns:
+            self.cursor.execute("ALTER TABLE participants ADD COLUMN is_creator BOOLEAN DEFAULT 0")
         
         self.conn.commit()
 
-    def add_participant(self, user_id: str, name: str):
+    def add_participant(self, user_id: str, name: str, is_creator: bool = False):
         self.cursor.execute("""
-            INSERT OR REPLACE INTO participants (user_id, name)
-            VALUES (?, ?)
-        """, (user_id, name))
+            INSERT OR REPLACE INTO participants (user_id, name, is_creator)
+            VALUES (?, ?, ?)
+        """, (user_id, name, is_creator))
         self.conn.commit()
 
     def set_wishlist(self, user_id: str, wishlist: str):
@@ -179,3 +181,12 @@ class DatabaseManager:
             'missing_wishlist': row[2] is None,
             'missing_address': row[3] is None
         } for row in rows]
+
+    def is_creator_or_admin(self, user_id: str) -> bool:
+        """Check if user is the creator of the current event"""
+        self.cursor.execute("""
+            SELECT is_creator FROM participants
+            WHERE user_id = ?
+        """, (user_id,))
+        result = self.cursor.fetchone()
+        return bool(result and result[0])
