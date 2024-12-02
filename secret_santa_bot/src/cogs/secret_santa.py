@@ -99,8 +99,18 @@ class SecretSantaCog(commands.Cog):
         await ctx.send(f"Participants:\n{participant_list}")
 
     @commands.command(name='message')
-    async def send_message(self, ctx, recipient_type, *, message):
+    async def send_message(self, ctx, recipient_type=None, *, message=None):
         """Send a message to your Secret Santa partner"""
+        if recipient_type is None or message is None:
+            usage_msg = (
+                "📝 **Message Command Usage:**\n"
+                "`s!message gifter <your message>` - Send a message to the person giving you a gift\n"
+                "`s!message giftee <your message>` - Send a message to the person you're giving a gift to\n\n"
+                "Example: `s!message giftee Thank you for the wishlist!`"
+            )
+            await ctx.send(usage_msg)
+            return
+            
         user_id = str(ctx.author.id)
         if recipient_type.lower() == 'gifter':
             partner_id = self.db_manager.get_gifter_for_user(user_id)
@@ -109,18 +119,18 @@ class SecretSantaCog(commands.Cog):
             partner_id = self.db_manager.get_giftee_for_user(user_id)
             anonymous_msg = f"🎅 Message from your Secret Santa:\n\n{message}"
         else:
-            await ctx.send("Invalid recipient type. Use 'gifter' or 'giftee'.")
+            await ctx.send("❌ Invalid recipient type. Use 'gifter' or 'giftee'.")
             return
         
         if partner_id:
             partner = self.bot.get_user(int(partner_id))
             if partner:
                 await partner.send(anonymous_msg)
-                await ctx.send("Message sent successfully!")
+                await ctx.send("✉️ Message sent successfully!")
             else:
-                await ctx.send("Unable to find the partner's account.")
+                await ctx.send("❌ Unable to find the partner's account.")
         else:
-            await ctx.send("You don't have a partner yet!")
+            await ctx.send("❌ You don't have a partner yet!")
 
     @commands.command(name='start')
     async def start_secret_santa(self, ctx):
