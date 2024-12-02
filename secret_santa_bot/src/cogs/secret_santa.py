@@ -11,13 +11,15 @@ class CustomHelpCommand(commands.DefaultHelpCommand):
         help_text += "s!create - Create a new Secret Santa event\n"
         help_text += "s!join - Join the Secret Santa event\n"
         help_text += "s!setwishlist - Set your gift preferences\n"
+        help_text += "s!setaddress - Set your delivery address\n"
+        help_text += "s!myinfo - View your current wishlist and address\n"
         help_text += "s!partnerinfo - View your partner's gift preferences\n"
         help_text += "s!participants - List all participants\n"
         help_text += "s!message - Send a message to your Secret Santa partner\n"
         help_text += "s!start - Start the Secret Santa event\n"
         help_text += "s!cancel - Cancel the Secret Santa event\n"
-        help_text += "s!info - Display bot information\n"
-        help_text += "s!setaddress - Set your delivery address\n"
+        help_text += "s!remind - Send reminders to participants with missing info\n"
+        help_text += "s!info - Display bot information"
         
         await self.get_destination().send(help_text)
 
@@ -261,6 +263,80 @@ class SecretSantaCog(commands.Cog):
         self.db_manager.set_address(user_id, address)
         log_event("ADDRESS", f"{ctx.author.name} set their address")
         await ctx.send("Address set successfully! (Only your Secret Santa will see this)")
+
+    @commands.command(name='myinfo')
+    async def view_my_info(self, ctx):
+        """View your current Secret Santa information"""
+        user_id = str(ctx.author.id)
+        
+        # Get user's current info from database
+        self.db_manager.cursor.execute("""
+            SELECT wishlist, address
+            FROM participants
+            WHERE user_id = ?
+        """, (user_id,))
+        result = self.db_manager.cursor.fetchone()
+        
+        if not result:
+            await ctx.send("❌ You haven't joined the Secret Santa yet! Use `s!join` to participate.")
+            return
+            
+        wishlist, address = result
+        
+        # Create info message
+        info_msg = (
+            "🎄 **Your Secret Santa Information:**\n\n"
+            f"**Wishlist:** {wishlist or 'Not set yet - use s!setwishlist'}\n"
+            f"**Address:** {address or 'Not set yet - use s!setaddress'}\n\n"
+            "Remember: Both wishlist and address are required before the event can start!"
+        )
+        
+        # Send as DM
+        try:
+            await ctx.author.send(info_msg)
+            if isinstance(ctx.channel, discord.TextChannel):
+                await ctx.send("📬 I've sent your information in a DM!")
+        except discord.Forbidden:
+            await ctx.send("❌ I couldn't send you a DM! Please check your privacy settings.")
+
+    @commands.command(name='match')
+    async def get_match_info(self, ctx):
+        """Get your Secret Santa match information again"""
+        user_id = str(ctx.author.id)
+        
+        # Get receiver information
+        receiver_id = self.db_manager.get_giftee_for_user(user_id)
+        if not receiver_id:
+            await ctx.send("❌ You don't have a Secret Santa match yet! Wait for the event to start.")
+            return
+            
+        # Get receiver's details
+        self.db_manager.cursor.execute("""
+            SELECT name, wishlist, address
+            FROM participants
+            WHERE user_id = ?
+        """, (receiver_id,))
+        result = self.db_manager.cursor.fetchone()
+        
+        if result:
+            name, wishlist, address = result
+            match_msg = (
+                f"🎄 Your Secret Santa match:\n\n"
+                f"**Recipient:** {name}\n"
+                f"**Wishlist:** {wishlist or 'No wishlist set'}\n"
+                f"**Delivery Address:** {address or 'No address set'}\n\n"
+                "You can message them anonymously using `s!message giftee <your message>`"
+            )
+            
+            # Send as DM
+            try:
+                await ctx.author.send(match_msg)
+                if isinstance(ctx.channel, discord.TextChannel):
+                    await ctx.send("📬 I've sent your match information in a DM!")
+            except discord.Forbidden:
+                await ctx.send("❌ I couldn't send you a DM! Please check your privacy settings.")
+        else:
+            await ctx.send("❌ Error retrieving match information. Please contact an administrator.")
 
 async def setup(bot):
     await bot.add_cog(SecretSantaCog(bot))

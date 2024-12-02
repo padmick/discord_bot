@@ -62,6 +62,7 @@ poetry run python src/bot.py
 - `s!join` - Join the Secret Santa event
 - `s!setwishlist <wishlist>` - Set your gift preferences
 - `s!setaddress <address>` - Set your delivery address
+- `s!myinfo` - View your current wishlist and address (sent via DM)
 - `s!partnerinfo` - View your partner's gift preferences
 - `s!participants` - List all participants
 
