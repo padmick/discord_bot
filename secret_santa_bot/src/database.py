@@ -39,10 +39,12 @@ class DatabaseManager:
         self.conn.commit()
 
     def add_participant(self, user_id: str, name: str, is_creator: bool = False):
+        """Add a participant to the Secret Santa event"""
         self.cursor.execute("""
-            INSERT OR REPLACE INTO participants (user_id, name, is_creator)
+            INSERT OR REPLACE INTO participants 
+            (user_id, name, is_creator)
             VALUES (?, ?, ?)
-        """, (user_id, name, is_creator))
+        """, (user_id, name, 1 if is_creator else 0))
         self.conn.commit()
 
     def set_wishlist(self, user_id: str, wishlist: str):
@@ -185,7 +187,8 @@ class DatabaseManager:
     def is_creator_or_admin(self, user_id: str) -> bool:
         """Check if user is the creator of the current event"""
         self.cursor.execute("""
-            SELECT is_creator FROM participants
+            SELECT is_creator 
+            FROM participants 
             WHERE user_id = ?
         """, (user_id,))
         result = self.cursor.fetchone()

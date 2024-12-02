@@ -135,6 +135,14 @@ class SecretSantaCog(commands.Cog):
     @commands.command(name='start')
     async def start_secret_santa(self, ctx):
         """Start the Secret Santa event and assign partners"""
+        # Check if user is admin or creator
+        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
+        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
+        
+        if not (is_admin or is_creator):
+            await ctx.send("❌ Only the event creator or server administrators can start the Secret Santa!")
+            return
+        
         participants = self.db_manager.get_all_participants()
         if len(participants) < 2:
             await ctx.send("At least two participants are required.")
@@ -178,7 +186,7 @@ class SecretSantaCog(commands.Cog):
                 )
                 await giver.send(partner_msg)
         
-        log_event("START", f"Secret Santa started in server {ctx.guild.id}")
+        log_event("START", f"Secret Santa started by {ctx.author.name} in server {ctx.guild.id}")
         await ctx.send("🎅 Secret Santa has begun! All participants have received their matches via DM!")
 
     @commands.command(name='cancel')
