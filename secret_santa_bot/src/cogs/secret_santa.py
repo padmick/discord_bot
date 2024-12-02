@@ -102,8 +102,10 @@ class SecretSantaCog(commands.Cog):
         user_id = str(ctx.author.id)
         if recipient_type.lower() == 'gifter':
             partner_id = self.db_manager.get_gifter_for_user(user_id)
+            anonymous_msg = f"🎄 Message from your giftee:\n\n{message}"
         elif recipient_type.lower() == 'giftee':
             partner_id = self.db_manager.get_giftee_for_user(user_id)
+            anonymous_msg = f"🎅 Message from your Secret Santa:\n\n{message}"
         else:
             await ctx.send("Invalid recipient type. Use 'gifter' or 'giftee'.")
             return
@@ -111,7 +113,7 @@ class SecretSantaCog(commands.Cog):
         if partner_id:
             partner = self.bot.get_user(int(partner_id))
             if partner:
-                await partner.send(message)
+                await partner.send(anonymous_msg)
                 await ctx.send("Message sent successfully!")
             else:
                 await ctx.send("Unable to find the partner's account.")
