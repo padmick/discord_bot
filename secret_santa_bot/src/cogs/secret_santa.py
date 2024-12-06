@@ -158,14 +158,15 @@ class SecretSantaCog(commands.Cog):
             receiver = self.bot.get_user(int(pairing['receiver']))
             
             if giver and receiver:
-                partner_msg = (
-                    f"🎄 Your Secret Santa match:\n\n"
-                    f"**Recipient:** {receiver.name}\n"
-                    f"**Wishlist:** {pairing['receiver_wishlist']}\n"
-                    f"**Delivery Address:** {pairing['receiver_address']}\n\n"
-                    "You can message them anonymously using `s!message giftee <your message>`"
-                )
-                await giver.send(partner_msg)
+                try:
+                    await self._send_match_notification(
+                        giver, 
+                        receiver, 
+                        pairing['receiver_wishlist'],
+                        pairing['receiver_address']
+                    )
+                except discord.Forbidden:
+                    await ctx.send(f"❌ Couldn't send match notification to {giver.name}. Please check DM permissions.")
         
         log_event("START", f"Secret Santa started by {ctx.author.name} in server {ctx.guild.id}")
         await ctx.send("🎅 Secret Santa has begun! All participants have received their matches via DM!")
@@ -245,7 +246,7 @@ class SecretSantaCog(commands.Cog):
             user_missing = next((user for user in missing_info if user['user_id'] == user_id), None)
             if user_missing:
                 if user_missing['missing_address']:
-                    await ctx.send("ℹ️ Don't forget to set your address using `s!setaddress`!")
+                    await ctx.send("️ Don't forget to set your address using `s!setaddress`!")
             else:
                 await ctx.send("🎄 Great! You've completed all required information!")
         except Exception as e:
@@ -454,6 +455,35 @@ class SecretSantaCog(commands.Cog):
         
         await ctx.send(f"📬 Sent reminders to {reminder_sent} participant(s) with missing information.")
         log_event("REMIND", f"Reminders sent by {ctx.author.name} to {reminder_sent} participants")
+
+    async def _send_match_notification(self, giver, receiver, wishlist, address):
+        """Helper method to send match notification, handling long messages"""
+        intro_msg = (
+            f"🎄 Your Secret Santa match:\n\n"
+            f"**Recipient:** {receiver.name}\n"
+        )
+        await giver.send(intro_msg)
+
+        # Send wishlist (potentially split)
+        wishlist_msg = f"**Wishlist:**\n{wishlist or 'No wishlist set'}"
+        if len(wishlist_msg) > 1900:
+            chunks = [wishlist_msg[i:i+1900] for i in range(0, len(wishlist_msg), 1900)]
+            for i, chunk in enumerate(chunks, 1):
+                await giver.send(f"Wishlist (Part {i}/{len(chunks)}):\n{chunk}")
+        else:
+            await giver.send(wishlist_msg)
+
+        # Send address (potentially split)
+        address_msg = f"**Delivery Address:**\n{address or 'No address set'}"
+        if len(address_msg) > 1900:
+            chunks = [address_msg[i:i+1900] for i in range(0, len(address_msg), 1900)]
+            for i, chunk in enumerate(chunks, 1):
+                await giver.send(f"Address (Part {i}/{len(chunks)}):\n{chunk}")
+        else:
+            await giver.send(address_msg)
+
+        # Send final instructions
+        await giver.send("You can message them anonymously using `s!message giftee <your message>`")
 
 async def setup(bot):
     await bot.add_cog(SecretSantaCog(bot))
