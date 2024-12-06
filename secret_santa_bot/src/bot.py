@@ -6,54 +6,52 @@ from database import DatabaseManager
 from utils import log_event
 from cogs.secret_santa import SecretSantaCog, CustomHelpCommand
 
+# Load environment variables
+load_dotenv()
+TOKEN = os.getenv('DISCORD_TOKEN')
+
+# Set up intents
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
+# Initialize bot
 bot = commands.Bot(
     command_prefix=commands.when_mentioned_or('s!', 'S!'), 
     case_insensitive=True,
     intents=intents
 )
+
+# Initialize database
+db_manager = DatabaseManager()
+
+# Set up help command
 bot.help_command = CustomHelpCommand()
 
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
+    # Add cogs here after bot is ready
+    await bot.add_cog(SecretSantaCog(bot, db_manager))
     await bot.change_presence(activity=discord.Game(name="Secret Santa"))
 
 def check_permissions(ctx):
-    # Check if the context is in a guild
     if isinstance(ctx.author, discord.Member):
-        # Check if the user has permission to send and receive messages
         permissions = ctx.channel.permissions_for(ctx.author)
         can_send_messages = permissions.send_messages
         can_read_messages = permissions.read_messages
-
         return can_send_messages and can_read_messages
-    else:
-        # If not in a guild, assume permissions are granted (e.g., in DMs)
-        return True
+    return True
 
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         await ctx.send("Command not found. Use `s!help` to see available commands.")
     else:
-        error_msg = str(error)[:900]  # Limit error message length
+        error_msg = str(error)[:900]
         print(f"Error: {error}")
         await ctx.send(f"❌ An error occurred: {error_msg}")
 
-async def setup():
-    await bot.load_extension('cogs.secret_santa')
-
-if __name__ == '__main__':
-    load_dotenv()
-    bot.add_check(check_permissions)
-    
-    @bot.event
-    async def setup_hook():
-        await setup()
-        print("Extensions loaded")
-    
-    bot.run(os.getenv('DISCORD_TOKEN'))
+# Run bot
+if __name__ == "__main__":
+    bot.run(TOKEN)
