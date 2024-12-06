@@ -213,7 +213,7 @@ class SecretSantaCog(commands.Cog):
                 
             gifter = self.bot.get_user(int(gifter_id))
             if gifter:
-                formatted_msg = await self._format_message_notification(message, True)
+                formatted_msg = await self._format_message_notification(message, False)
                 success = await self._send_dm_with_log(
                     gifter, 
                     formatted_msg,
@@ -234,7 +234,7 @@ class SecretSantaCog(commands.Cog):
                 
             giftee = self.bot.get_user(int(giftee_id))
             if giftee:
-                formatted_msg = await self._format_message_notification(message, False)
+                formatted_msg = await self._format_message_notification(message, True)
                 success = await self._send_dm_with_log(
                     giftee, 
                     formatted_msg,
