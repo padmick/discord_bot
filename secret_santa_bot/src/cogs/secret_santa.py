@@ -1,9 +1,7 @@
 import discord
 from discord.ext import commands
-from database import DatabaseManager
 from utils import log_event
-from typing import Optional
-import psutil
+import asyncio
 
 class CustomHelpCommand(commands.DefaultHelpCommand):
     async def send_bot_help(self, mapping):
@@ -13,7 +11,7 @@ class CustomHelpCommand(commands.DefaultHelpCommand):
         help_text += "s!setwishlist - Set your gift preferences\n"
         help_text += "s!setaddress - Set your delivery address\n"
         help_text += "s!myinfo - View your current wishlist and address\n"
-        help_text += "s!partnerinfo - View your partner's gift preferences\n"
+        help_text += "s!match - Get your Secret Santa match information again\n"
         help_text += "s!participants - List all participants\n"
         help_text += "s!message - Send a message to your Secret Santa partner\n"
         help_text += "s!start - Start the Secret Santa event\n"
@@ -22,7 +20,7 @@ class CustomHelpCommand(commands.DefaultHelpCommand):
         help_text += "s!info - Display bot information"
         
         # Split into multiple messages if too long
-        if len(help_text) > 1900:  # Leave room for Discord markdown
+        if len(help_text) > 1900:
             messages = [help_text[i:i+1900] for i in range(0, len(help_text), 1900)]
             for msg in messages:
                 await self.get_destination().send(msg)
@@ -30,17 +28,38 @@ class CustomHelpCommand(commands.DefaultHelpCommand):
             await self.get_destination().send(help_text)
 
 class SecretSantaCog(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot, db_manager):
         self.bot = bot
-        self.db_manager = DatabaseManager()
-        self.process = psutil.Process()
+        self.db_manager = db_manager
 
-    @commands.command(name='info')
-    async def info(self, ctx):
-        """Display information about the bot"""
-        guild_count = len(self.bot.guilds)
-        memory_usage = round((self.process.memory_info().rss / 1024 ** 2), 2)
-        await ctx.send(f"Guilds: {guild_count}\nMemory Usage: {memory_usage} MB")
+    async def _show_potential_matches(self, ctx, pairings) -> bool:
+        """Show potential matches to creator and get confirmation"""
+        match_msg = "🎄 **Potential Secret Santa Matches:**\n\n"
+        for pairing in pairings:
+            giver = self.bot.get_user(int(pairing['giver']))
+            receiver = self.bot.get_user(int(pairing['receiver']))
+            if giver and receiver:
+                match_msg += f"• {giver.name} → {receiver.name}\n"
+        
+        match_msg += "\nAre you happy with these matches? (yes/no)"
+        
+        try:
+            await ctx.author.send(match_msg)
+            if isinstance(ctx.channel, discord.TextChannel):
+                await ctx.send("📬 I've sent you the potential matches in a DM!")
+        except discord.Forbidden:
+            await ctx.send("❌ I couldn't send you a DM! Please check your privacy settings.")
+            return False
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.author.dm_channel and m.content.lower() in ['yes', 'no']
+
+        try:
+            response = await self.bot.wait_for('message', timeout=300.0, check=check)
+            return response.content.lower() == 'yes'
+        except asyncio.TimeoutError:
+            await ctx.author.send("❌ No response received within 5 minutes. Please run s!start again.")
+            return False
 
     @commands.command(name='create')
     async def create_secret_santa(self, ctx):
@@ -54,7 +73,7 @@ class SecretSantaCog(commands.Cog):
         log_event("CREATE", f"New Secret Santa event created by {ctx.author.name} in server {ctx.guild.id}")
         
         create_msg = (
-            f"🎄 {ctx.author.name[:50]} has started a Secret Santa event! 🎅\n\n"
+            f"🎄 {ctx.author.name} has started a Secret Santa event! 🎅\n\n"
             "To join the Secret Santa:\n"
             "1. Use `s!join` in this channel or DM the bot\n"
             "2. You'll receive instructions to set your wishlist and address\n\n"
@@ -86,57 +105,97 @@ class SecretSantaCog(commands.Cog):
         )
         await ctx.author.send(welcome_msg)
 
-    @commands.command(name='setwishlist')
-    async def set_wishlist(self, ctx, *, wishlist):
-        """Set your wishlist"""
-        if len(wishlist) > 1000:  # Setting a reasonable limit for wishlists
-            await ctx.send("❌ Wishlist is too long! Please keep it under 1000 characters.")
+    @commands.command(name='start')
+    async def start_secret_santa(self, ctx):
+        """Start the Secret Santa event and assign partners"""
+        # Check if user is admin or creator
+        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
+        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
+        
+        if not (is_admin or is_creator):
+            await ctx.send("❌ Only the event creator or server administrators can start the Secret Santa!")
             return
             
-        user_id = str(ctx.author.id)
-        try:
-            self.db_manager.set_wishlist(user_id, wishlist)
-            log_event("WISHLIST", f"{ctx.author.name} set their wishlist")
-            await ctx.send("✅ Wishlist set successfully!")
-            
-            # Check if this completes their required info
-            missing_info = self.db_manager.check_missing_info()
-            user_missing = next((user for user in missing_info if user['user_id'] == user_id), None)
-            if user_missing:
-                if user_missing['missing_address']:
-                    await ctx.send("ℹ️ Don't forget to set your address using `s!setaddress`!")
-            else:
-                await ctx.send("🎄 Great! You've completed all required information!")
-        except Exception as e:
-            await ctx.send("❌ Error setting wishlist. Please try again with a shorter wishlist.")
-            print(f"Error setting wishlist: {e}")
-
-    @commands.command(name='partnerinfo')
-    async def get_partner_info(self, ctx):
-        """View your partner's gift preferences"""
-        user_id = str(ctx.author.id)
-        partner_info = self.db_manager.get_partner_info(user_id)
-        if partner_info:
-            await ctx.send(f"Your Secret Santa is: {partner_info['name']}\nTheir wishlist: {partner_info['wishlist']}")
-        else:
-            await ctx.send("You don't have a partner yet!")
-
-    @commands.command(name='participants')
-    async def list_participants(self, ctx):
-        """List all participants in the Secret Santa"""
         participants = self.db_manager.get_all_participants()
-        participant_list = '\n'.join([f"- {p['name'][:50]}" for p in participants])
+        if len(participants) < 2:
+            await ctx.send("At least two participants are required.")
+            return
         
-        if len(participant_list) > 1900:
-            chunks = [participant_list[i:i+1900] for i in range(0, len(participant_list), 1900)]
-            for i, chunk in enumerate(chunks, 1):
-                await ctx.send(f"Participants (Part {i}/{len(chunks)}):\n{chunk}")
-        else:
-            await ctx.send(f"Participants:\n{participant_list}")
+        # Check for missing information
+        missing_info = self.db_manager.check_missing_info()
+        if missing_info:
+            await ctx.send("Cannot start - some users haven't set their preferences!")
+            
+            # DM users with missing information
+            for user in missing_info:
+                member = self.bot.get_user(int(user['user_id']))
+                if member:
+                    missing_items = []
+                    if user['missing_wishlist']:
+                        missing_items.append("wishlist (use s!setwishlist)")
+                    if user['missing_address']:
+                        missing_items.append("address (use s!setaddress)")
+                    
+                    missing_msg = (
+                        "⚠️ The Secret Santa event cannot start because you haven't set your:\n"
+                        f"{', '.join(missing_items)}\n"
+                        "Please set these to allow the event to start!"
+                    )
+                    await member.send(missing_msg)
+            return
+
+        # Keep generating matches until creator approves
+        matches_approved = False
+        while not matches_approved:
+            pairings = self.db_manager.assign_partners(participants)
+            matches_approved = await self._show_potential_matches(ctx, pairings)
+            if not matches_approved:
+                await ctx.author.send("🔄 Generating new matches...")
+
+        # Send out match notifications
+        for pairing in pairings:
+            giver = self.bot.get_user(int(pairing['giver']))
+            receiver = self.bot.get_user(int(pairing['receiver']))
+            
+            if giver and receiver:
+                partner_msg = (
+                    f"🎄 Your Secret Santa match:\n\n"
+                    f"**Recipient:** {receiver.name}\n"
+                    f"**Wishlist:** {pairing['receiver_wishlist']}\n"
+                    f"**Delivery Address:** {pairing['receiver_address']}\n\n"
+                    "You can message them anonymously using `s!message giftee <your message>`"
+                )
+                await giver.send(partner_msg)
+        
+        log_event("START", f"Secret Santa started by {ctx.author.name} in server {ctx.guild.id}")
+        await ctx.send("🎅 Secret Santa has begun! All participants have received their matches via DM!")
+
+    @commands.command(name='cancel')
+    async def cancel_secret_santa(self, ctx):
+        """Cancel the Secret Santa event"""
+        if not self.db_manager.is_event_active():
+            await ctx.send("❌ There is no active Secret Santa event to cancel!")
+            return
+        
+        # Check if user is admin or creator
+        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
+        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
+        
+        if not (is_admin or is_creator):
+            await ctx.send("❌ Only the event creator or server administrators can cancel the Secret Santa!")
+            return
+        
+        self.db_manager.cancel_secret_santa()
+        log_event("CANCEL", f"Secret Santa cancelled by {ctx.author.name} in server {ctx.guild.id}")
+        await ctx.send("🎄 Secret Santa event cancelled! Use `s!create` to start a new one.")
 
     @commands.command(name='message')
     async def send_message(self, ctx, recipient_type=None, *, message=None):
         """Send a message to your Secret Santa partner"""
+        if len(message or '') > 1000:
+            await ctx.send("❌ Message is too long! Please keep it under 1000 characters.")
+            return
+            
         if recipient_type is None or message is None:
             usage_msg = (
                 "📝 **Message Command Usage:**\n"
@@ -168,133 +227,36 @@ class SecretSantaCog(commands.Cog):
         else:
             await ctx.send("❌ You don't have a partner yet!")
 
-    @commands.command(name='start')
-    async def start_secret_santa(self, ctx):
-        """Start the Secret Santa event and assign partners"""
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can start the Secret Santa!")
+    @commands.command(name='setwishlist')
+    async def set_wishlist(self, ctx, *, wishlist):
+        """Set your wishlist"""
+        if len(wishlist) > 1000:
+            await ctx.send("❌ Wishlist is too long! Please keep it under 1000 characters.\nTip: Consider using bullet points for better organization.")
             return
             
-        participants = self.db_manager.get_all_participants()
-        if len(participants) < 2:
-            await ctx.send("At least two participants are required.")
-            return
-        
-        # Check for missing information
-        missing_info = self.db_manager.check_missing_info()
-        if missing_info:
-            await ctx.send("Cannot start - some users haven't set their preferences!")
+        user_id = str(ctx.author.id)
+        try:
+            self.db_manager.set_wishlist(user_id, wishlist)
+            log_event("WISHLIST", f"{ctx.author.name} set their wishlist")
+            await ctx.send("✅ Wishlist set successfully!")
             
-            # Create a detailed missing info message
-            missing_details = "**Participants missing information:**\n"
-            for user in missing_info:
-                member = self.bot.get_user(int(user['user_id']))
-                if member:
-                    missing_items = []
-                    if user['missing_wishlist']:
-                        missing_items.append("wishlist")
-                    if user['missing_address']:
-                        missing_items.append("address")
-                    missing_details += f"• {member.name}: Missing {' and '.join(missing_items)}\n"
-            
-            missing_details += "\nUse `s!remind` to send reminders to these participants."
-            await ctx.author.send(missing_details)
-            
-            # DM users with missing information
-            for user in missing_info:
-                await self._send_missing_info_reminder(user)
-            return
-        
-        # Continue with existing start logic...
-        pairings = self.db_manager.assign_partners(participants)
-        for pairing in pairings:
-            giver = self.bot.get_user(int(pairing['giver']))
-            receiver = self.bot.get_user(int(pairing['receiver']))
-            
-            if giver and receiver:
-                partner_msg = (
-                    f"🎄 Your Secret Santa match:\n\n"
-                    f"**Recipient:** {receiver.name}\n"
-                    f"**Wishlist:** {pairing['receiver_wishlist']}\n"
-                    f"**Delivery Address:** {pairing['receiver_address']}\n\n"
-                    "You can message them anonymously using `s!message giftee <your message>`"
-                )
-                await giver.send(partner_msg)
-        
-        log_event("START", f"Secret Santa started by {ctx.author.name} in server {ctx.guild.id}")
-        await ctx.send("🎅 Secret Santa has begun! All participants have received their matches via DM!")
-
-    async def _send_missing_info_reminder(self, user):
-        """Helper method to send missing info reminders"""
-        member = self.bot.get_user(int(user['user_id']))
-        if member:
-            missing_items = []
-            if user['missing_wishlist']:
-                missing_items.append("wishlist (use s!setwishlist)")
-            if user['missing_address']:
-                missing_items.append("address (use s!setaddress)")
-            
-            missing_msg = (
-                "⚠️ The Secret Santa event cannot start because you haven't set your:\n"
-                f"{', '.join(missing_items)}\n"
-                "Please set these to allow the event to start!"
-            )
-            await member.send(missing_msg)
-
-    @commands.command(name='remind')
-    async def remind_missing_info(self, ctx):
-        """Send reminders to participants with missing information"""
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can send reminders!")
-            return
-            
-        missing_info = self.db_manager.check_missing_info()
-        if not missing_info:
-            await ctx.send("✅ All participants have completed their information!")
-            return
-            
-        reminder_sent = 0
-        for user in missing_info:
-            member = self.bot.get_user(int(user['user_id']))
-            if member:
-                await self._send_missing_info_reminder(user)
-                reminder_sent += 1
-        
-        await ctx.send(f"📬 Sent reminders to {reminder_sent} participant(s) with missing information.")
-        log_event("REMIND", f"Reminders sent by {ctx.author.name} to {reminder_sent} participants")
-
-    @commands.command(name='cancel')
-    async def cancel_secret_santa(self, ctx):
-        """Cancel the Secret Santa event"""
-        if not self.db_manager.is_event_active():
-            await ctx.send("❌ There is no active Secret Santa event to cancel!")
-            return
-        
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can cancel the Secret Santa!")
-            return
-        
-        self.db_manager.cancel_secret_santa()
-        log_event("CANCEL", f"Secret Santa cancelled by {ctx.author.name} in server {ctx.guild.id}")
-        await ctx.send("🎄 Secret Santa event cancelled! Use `s!create` to start a new one.")
+            # Check if this completes their required info
+            missing_info = self.db_manager.check_missing_info()
+            user_missing = next((user for user in missing_info if user['user_id'] == user_id), None)
+            if user_missing:
+                if user_missing['missing_address']:
+                    await ctx.send("ℹ️ Don't forget to set your address using `s!setaddress`!")
+            else:
+                await ctx.send("🎄 Great! You've completed all required information!")
+        except Exception as e:
+            await ctx.send("❌ Error setting wishlist. Please try again with a shorter wishlist.")
+            print(f"Error setting wishlist: {e}")
 
     @commands.command(name='setaddress')
     async def set_address(self, ctx, *, address):
         """Set your address for gift delivery"""
-        if len(address) > 1000:  # Setting a reasonable limit for addresses
-            await ctx.send("❌ Address is too long! Please keep it under 1000 characters.")
+        if len(address) > 1000:
+            await ctx.send("❌ Address is too long! Please keep it under 1000 characters.\nTip: Only include essential delivery information.")
             return
             
         user_id = str(ctx.author.id)
@@ -432,15 +394,42 @@ class SecretSantaCog(commands.Cog):
             
         log_event("DEBUG", f"Debug information accessed by {ctx.author.name}")
 
-    def is_creator_or_admin(self, user_id: str) -> bool:
-        """Check if user is the creator of the current event"""
-        self.cursor.execute("""
-            SELECT is_creator 
-            FROM participants 
-            WHERE user_id = ?
-        """, (user_id,))
-        result = self.cursor.fetchone()
-        return bool(result and result[0])
+    @commands.command(name='remind')
+    async def remind_missing_info(self, ctx):
+        """Send reminders to participants with missing information"""
+        # Check if user is admin or creator
+        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
+        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
+        
+        if not (is_admin or is_creator):
+            await ctx.send("❌ Only the event creator or server administrators can send reminders!")
+            return
+            
+        missing_info = self.db_manager.check_missing_info()
+        if not missing_info:
+            await ctx.send("✅ All participants have completed their information!")
+            return
+            
+        reminder_sent = 0
+        for user in missing_info:
+            member = self.bot.get_user(int(user['user_id']))
+            if member:
+                missing_items = []
+                if user['missing_wishlist']:
+                    missing_items.append("wishlist (use s!setwishlist)")
+                if user['missing_address']:
+                    missing_items.append("address (use s!setaddress)")
+                
+                missing_msg = (
+                    "⚠️ The Secret Santa event cannot start because you haven't set your:\n"
+                    f"{', '.join(missing_items)}\n"
+                    "Please set these to allow the event to start!"
+                )
+                await member.send(missing_msg)
+                reminder_sent += 1
+        
+        await ctx.send(f"📬 Sent reminders to {reminder_sent} participant(s) with missing information.")
+        log_event("REMIND", f"Reminders sent by {ctx.author.name} to {reminder_sent} participants")
 
 async def setup(bot):
     await bot.add_cog(SecretSantaCog(bot))
