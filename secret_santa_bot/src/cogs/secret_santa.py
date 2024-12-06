@@ -191,42 +191,41 @@ class SecretSantaCog(commands.Cog):
         await ctx.send("🎄 Secret Santa event cancelled! Use `s!create` to start a new one.")
 
     @commands.command(name='message')
-    async def send_message(self, ctx, recipient_type=None, *, message=None):
-        """Send a message to your Secret Santa partner"""
-        if len(message or '') > 1000:
-            await ctx.send("❌ Message is too long! Please keep it under 1000 characters.")
-            return
-            
-        if recipient_type is None or message is None:
-            usage_msg = (
-                "📝 **Message Command Usage:**\n"
-                "`s!message gifter <your message>` - Send a message to the person giving you a gift\n"
-                "`s!message giftee <your message>` - Send a message to the person you're giving a gift to\n\n"
-                "Example: `s!message giftee Thank you for the wishlist!`"
-            )
-            await ctx.send(usage_msg)
+    async def send_anonymous_message(self, ctx, recipient_type: str, *, message: str):
+        """Send an anonymous message to your Secret Santa partner"""
+        if len(message) > 1000:
+            await ctx.send("❌ Message too long! Please keep it under 1000 characters.")
             return
             
         user_id = str(ctx.author.id)
-        if recipient_type.lower() == 'gifter':
-            partner_id = self.db_manager.get_gifter_for_user(user_id)
-            anonymous_msg = f"🎄 Message from your giftee:\n\n{message}"
-        elif recipient_type.lower() == 'giftee':
-            partner_id = self.db_manager.get_giftee_for_user(user_id)
-            anonymous_msg = f"🎅 Message from your Secret Santa:\n\n{message}"
-        else:
-            await ctx.send("❌ Invalid recipient type. Use 'gifter' or 'giftee'.")
-            return
         
-        if partner_id:
-            partner = self.bot.get_user(int(partner_id))
-            if partner:
-                await partner.send(anonymous_msg)
-                await ctx.send("✉️ Message sent successfully!")
-            else:
-                await ctx.send("❌ Unable to find the partner's account.")
+        if recipient_type.lower() == 'gifter':
+            # Sending message to your Secret Santa
+            gifter_id = self.db_manager.get_gifter_for_user(user_id)
+            if not gifter_id:
+                await ctx.send("❌ You don't have a Secret Santa assigned yet!")
+                return
+                
+            gifter = self.bot.get_user(int(gifter_id))
+            if gifter:
+                formatted_msg = await self._format_message_notification(message, True)
+                await gifter.send(formatted_msg)
+                await ctx.send("✉️ Message sent to your Secret Santa!")
+                
+        elif recipient_type.lower() == 'giftee':
+            # Sending message to your recipient
+            giftee_id = self.db_manager.get_giftee_for_user(user_id)
+            if not giftee_id:
+                await ctx.send("❌ You don't have a gift recipient assigned yet!")
+                return
+                
+            giftee = self.bot.get_user(int(giftee_id))
+            if giftee:
+                formatted_msg = await self._format_message_notification(message, False)
+                await giftee.send(formatted_msg)
+                await ctx.send("✉️ Message sent to your giftee!")
         else:
-            await ctx.send("❌ You don't have a partner yet!")
+            await ctx.send("❌ Invalid recipient! Use `gifter` to message your Secret Santa or `giftee` to message your recipient.")
 
     @commands.command(name='setwishlist')
     async def set_wishlist(self, ctx, *, wishlist):
@@ -484,6 +483,17 @@ class SecretSantaCog(commands.Cog):
 
         # Send final instructions
         await giver.send("You can message them anonymously using `s!message giftee <your message>`")
+
+    async def _format_message_notification(self, message: str, is_from_gifter: bool) -> str:
+        """Format message notification with helpful reply instructions"""
+        prefix = "🎁 Your Secret Santa sent you a message:" if is_from_gifter else "🎄 Your giftee sent you a message:"
+        reply_cmd = "s!message gifter" if is_from_gifter else "s!message giftee"
+        
+        return (
+            f"{prefix}\n\n"
+            f"{message}\n\n"
+            f"To reply, use: `{reply_cmd} <your message>`"
+        )
 
 async def setup(bot):
     await bot.add_cog(SecretSantaCog(bot))
