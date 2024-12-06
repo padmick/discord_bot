@@ -192,15 +192,9 @@ class SecretSantaCog(commands.Cog):
 
     @commands.command(name='message')
     async def send_anonymous_message(self, ctx, recipient_type: str, *, message: str):
-        """Send an anonymous message to your Secret Santa partner"""
-        if len(message) > 1000:
-            await ctx.send("❌ Message too long! Please keep it under 1000 characters.")
-            return
-            
         user_id = str(ctx.author.id)
         
         if recipient_type.lower() == 'gifter':
-            # Sending message to your Secret Santa
             gifter_id = self.db_manager.get_gifter_for_user(user_id)
             if not gifter_id:
                 await ctx.send("❌ You don't have a Secret Santa assigned yet!")
@@ -209,11 +203,18 @@ class SecretSantaCog(commands.Cog):
             gifter = self.bot.get_user(int(gifter_id))
             if gifter:
                 formatted_msg = await self._format_message_notification(message, True)
-                await gifter.send(formatted_msg)
-                await ctx.send("✉️ Message sent to your Secret Santa!")
+                success = await self._send_dm_with_log(
+                    gifter, 
+                    formatted_msg,
+                    f"Giftee({ctx.author.name})", 
+                    "TO_GIFTER"
+                )
+                if success:
+                    await ctx.send("✉️ Message sent to your Secret Santa!")
+                else:
+                    await ctx.send("❌ Couldn't send message - recipient has DMs disabled")
                 
         elif recipient_type.lower() == 'giftee':
-            # Sending message to your recipient
             giftee_id = self.db_manager.get_giftee_for_user(user_id)
             if not giftee_id:
                 await ctx.send("❌ You don't have a gift recipient assigned yet!")
@@ -222,10 +223,16 @@ class SecretSantaCog(commands.Cog):
             giftee = self.bot.get_user(int(giftee_id))
             if giftee:
                 formatted_msg = await self._format_message_notification(message, False)
-                await giftee.send(formatted_msg)
-                await ctx.send("✉️ Message sent to your giftee!")
-        else:
-            await ctx.send("❌ Invalid recipient! Use `gifter` to message your Secret Santa or `giftee` to message your recipient.")
+                success = await self._send_dm_with_log(
+                    giftee, 
+                    formatted_msg,
+                    f"Gifter({ctx.author.name})", 
+                    "TO_GIFTEE"
+                )
+                if success:
+                    await ctx.send("✉️ Message sent to your giftee!")
+                else:
+                    await ctx.send("❌ Couldn't send message - recipient has DMs disabled")
 
     @commands.command(name='setwishlist')
     async def set_wishlist(self, ctx, *, wishlist):
@@ -494,6 +501,23 @@ class SecretSantaCog(commands.Cog):
             f"{message}\n\n"
             f"To reply, use: `{reply_cmd} <your message>`"
         )
+
+    async def _log_message_sent(self, sender: str, recipient: str, message_type: str, success: bool):
+        """Log message sending attempts and results"""
+        status = "✅" if success else "❌"
+        log_event("MESSAGE", 
+            f"{status} {message_type} message: {sender} → {recipient}")
+
+    async def _send_dm_with_log(self, user: discord.User, message: str, 
+                              sender_name: str, message_type: str) -> bool:
+        """Send DM and log the attempt"""
+        try:
+            await user.send(message)
+            await self._log_message_sent(sender_name, user.name, message_type, True)
+            return True
+        except discord.Forbidden:
+            await self._log_message_sent(sender_name, user.name, message_type, False)
+            return False
 
 async def setup(bot):
     await bot.add_cog(SecretSantaCog(bot))
