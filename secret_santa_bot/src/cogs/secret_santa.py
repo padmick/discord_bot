@@ -432,6 +432,16 @@ class SecretSantaCog(commands.Cog):
             
         log_event("DEBUG", f"Debug information accessed by {ctx.author.name}")
 
+    def is_creator_or_admin(self, user_id: str) -> bool:
+        """Check if user is the creator of the current event"""
+        self.cursor.execute("""
+            SELECT is_creator 
+            FROM participants 
+            WHERE user_id = ?
+        """, (user_id,))
+        result = self.cursor.fetchone()
+        return bool(result and result[0])
+
 async def setup(bot):
     await bot.add_cog(SecretSantaCog(bot))
     print("SecretSanta cog loaded successfully!")
