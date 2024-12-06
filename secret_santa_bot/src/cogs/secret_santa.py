@@ -389,6 +389,49 @@ class SecretSantaCog(commands.Cog):
         else:
             await ctx.send("❌ Error retrieving match information. Please contact an administrator.")
 
+    @commands.command(name='debug')
+    async def debug_info(self, ctx):
+        """Display all participant information (Admin/Creator only)"""
+        # Check if user is admin or creator
+        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
+        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
+        
+        if not (is_admin or is_creator):
+            await ctx.send("❌ Only the event creator or server administrators can use this command!")
+            return
+            
+        # Get all participant information
+        self.db_manager.cursor.execute("""
+            SELECT name, wishlist, address
+            FROM participants
+        """)
+        results = self.db_manager.cursor.fetchall()
+        
+        if not results:
+            await ctx.send("❌ No participants found in the database.")
+            return
+            
+        # Create debug message
+        debug_msg = "🔍 **Secret Santa Debug Information:**\n\n"
+        for name, wishlist, address in results:
+            debug_msg += f"**Participant:** {name}\n"
+            debug_msg += f"**Wishlist:** {wishlist or 'Not set'}\n"
+            debug_msg += f"**Address:** {address or 'Not set'}\n"
+            debug_msg += "-" * 40 + "\n"
+        
+        # Split message if too long
+        if len(debug_msg) > 1900:
+            chunks = [debug_msg[i:i+1900] for i in range(0, len(debug_msg), 1900)]
+            for chunk in chunks:
+                await ctx.author.send(chunk)
+        else:
+            await ctx.author.send(debug_msg)
+            
+        if isinstance(ctx.channel, discord.TextChannel):
+            await ctx.send("📬 Debug information has been sent to your DMs!")
+            
+        log_event("DEBUG", f"Debug information accessed by {ctx.author.name}")
+
 async def setup(bot):
     await bot.add_cog(SecretSantaCog(bot))
     print("SecretSanta cog loaded successfully!")
