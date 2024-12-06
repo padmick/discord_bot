@@ -351,6 +351,30 @@ class SecretSantaCog(commands.Cog):
         else:
             await ctx.send("❌ Error retrieving match information. Please contact an administrator.")
 
+    @commands.command(name='participants')
+    async def list_participants(self, ctx):
+        """List all participants in the Secret Santa event"""
+        if not self.db_manager.is_event_active():
+            await ctx.send("❌ There is no active Secret Santa event!")
+            return
+            
+        participants = self.db_manager.get_all_participants()
+        if not participants:
+            await ctx.send("No participants have joined yet!")
+            return
+            
+        participant_list = "🎄 **Current Participants:**\n"
+        for i, p in enumerate(participants, 1):
+            participant_list += f"{i}. {p['name']}\n"
+            
+        # Split message if too long
+        if len(participant_list) > 1900:
+            chunks = [participant_list[i:i+1900] for i in range(0, len(participant_list), 1900)]
+            for i, chunk in enumerate(chunks, 1):
+                await ctx.send(f"Page {i}/{len(chunks)}:\n{chunk}")
+        else:
+            await ctx.send(participant_list)
+
     @commands.command(name='debug')
     async def debug_info(self, ctx):
         """Display all participant information (Admin/Creator only)"""
