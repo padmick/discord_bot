@@ -75,17 +75,17 @@ class DatabaseManager:
         self.conn.close()
 
     def get_gifter_for_user(self, user_id: str) -> Optional[str]:
-        """Get the ID of the person giving a gift to the specified user"""
+        """Get the ID of the person giving a gift to this user"""
         self.cursor.execute("""
-            SELECT giver_id FROM pairings WHERE receiver_id = ?
+            SELECT giver FROM pairings WHERE receiver = ?
         """, (user_id,))
         result = self.cursor.fetchone()
         return result[0] if result else None
 
     def get_giftee_for_user(self, user_id: str) -> Optional[str]:
-        """Get the ID of the person receiving a gift from the specified user"""
+        """Get the ID of the person this user is giving a gift to"""
         self.cursor.execute("""
-            SELECT receiver_id FROM pairings WHERE giver_id = ?
+            SELECT receiver FROM pairings WHERE giver = ?
         """, (user_id,))
         result = self.cursor.fetchone()
         return result[0] if result else None

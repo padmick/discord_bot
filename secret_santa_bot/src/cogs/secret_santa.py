@@ -193,9 +193,19 @@ class SecretSantaCog(commands.Cog):
 
     @commands.command(name='message')
     async def send_anonymous_message(self, ctx, recipient_type: str, *, message: str):
+        """Send an anonymous message to your Secret Santa partner"""
+        if not self.db_manager.is_event_active():
+            await ctx.send("❌ There is no active Secret Santa event!")
+            return
+            
+        if len(message) > 1000:
+            await ctx.send("❌ Message too long! Please keep it under 1000 characters.")
+            return
+            
         user_id = str(ctx.author.id)
         
         if recipient_type.lower() == 'gifter':
+            # Get the user's gifter (person giving them a gift)
             gifter_id = self.db_manager.get_gifter_for_user(user_id)
             if not gifter_id:
                 await ctx.send("❌ You don't have a Secret Santa assigned yet!")
@@ -213,9 +223,10 @@ class SecretSantaCog(commands.Cog):
                 if success:
                     await ctx.send("✉️ Message sent to your Secret Santa!")
                 else:
-                    await ctx.send("❌ Couldn't send message - recipient has DMs disabled")
-                
+                    await ctx.send("❌ Couldn't send message - your Secret Santa has DMs disabled")
+            
         elif recipient_type.lower() == 'giftee':
+            # Get the user's giftee (person they're giving a gift to)
             giftee_id = self.db_manager.get_giftee_for_user(user_id)
             if not giftee_id:
                 await ctx.send("❌ You don't have a gift recipient assigned yet!")
@@ -233,7 +244,9 @@ class SecretSantaCog(commands.Cog):
                 if success:
                     await ctx.send("✉️ Message sent to your giftee!")
                 else:
-                    await ctx.send("❌ Couldn't send message - recipient has DMs disabled")
+                    await ctx.send("❌ Couldn't send message - your giftee has DMs disabled")
+        else:
+            await ctx.send("❌ Invalid recipient! Use `gifter` to message your Secret Santa or `giftee` to message your recipient.")
 
     @commands.command(name='setwishlist')
     async def set_wishlist(self, ctx, *, wishlist):
