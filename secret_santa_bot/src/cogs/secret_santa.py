@@ -17,7 +17,8 @@ class CustomHelpCommand(commands.DefaultHelpCommand):
         help_text += "s!start - Start the Secret Santa event\n"
         help_text += "s!cancel - Cancel the Secret Santa event\n"
         help_text += "s!remind - Send reminders to participants with missing info\n"
-        help_text += "s!info - Display bot information"
+        help_text += "s!info - Display bot information\n"
+        help_text += "s!broadcast - Send a message to all participants (admin only)\n"
         
         # Split into multiple messages if too long
         if len(help_text) > 1900:
@@ -461,6 +462,62 @@ class SecretSantaCog(commands.Cog):
         
         await ctx.send(f"📬 Sent reminders to {reminder_sent} participant(s) with missing information.")
         log_event("REMIND", f"Reminders sent by {ctx.author.name} to {reminder_sent} participants")
+
+    @commands.command(name='broadcast')
+    async def broadcast_message(self, ctx, *, message: str):
+        """Send a message to all participants (Admin/Creator only)"""
+        # Check if user is admin or creator
+        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
+        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
+        
+        if not (is_admin or is_creator):
+            await ctx.send("❌ Only the event creator or server administrators can broadcast messages!")
+            return
+            
+        if len(message) > 1900:
+            await ctx.send("❌ Message too long! Please keep it under 1900 characters.")
+            return
+            
+        participants = self.db_manager.get_all_participants()
+        if not participants:
+            await ctx.send("❌ No participants to send messages to!")
+            return
+            
+        broadcast_msg = (
+            "📢 **Announcement from Secret Santa Admin:**\n\n"
+            f"{message}"
+        )
+        
+        success_count = 0
+        failed_count = 0
+        
+        for participant in participants:
+            member = self.bot.get_user(int(participant['user_id']))
+            if member:
+                try:
+                    await member.send(broadcast_msg)
+                    success_count += 1
+                    await self._log_message_sent(
+                        ctx.author.name,
+                        member.name,
+                        "BROADCAST",
+                        True
+                    )
+                except discord.Forbidden:
+                    failed_count += 1
+                    await self._log_message_sent(
+                        ctx.author.name,
+                        member.name,
+                        "BROADCAST",
+                        False
+                    )
+        
+        status_msg = (
+            f"📬 Broadcast sent to {success_count} participant(s)\n"
+            f"❌ Failed to send to {failed_count} participant(s)"
+        )
+        await ctx.send(status_msg)
+        log_event("BROADCAST", f"Message broadcast by {ctx.author.name} to {success_count} participants")
 
     async def _send_match_notification(self, giver, receiver, wishlist, address):
         """Helper method to send match notification, handling long messages"""
