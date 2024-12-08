@@ -19,7 +19,7 @@ class CustomHelpCommand(commands.DefaultHelpCommand):
         help_text += "s!remind - Send reminders to participants with missing info\n"
         help_text += "s!info - Display bot information\n"
         help_text += "s!broadcast - Send a message to all participants (admin only)\n"
-        help_text += "s!debug - View recent log entries (admin only)\n"
+        help_text += "s!logs - View recent log entries (admin only)\n"
         
         # Split into multiple messages if too long
         if len(help_text) > 1900:
@@ -397,9 +397,9 @@ class SecretSantaCog(commands.Cog):
         else:
             await ctx.send(participant_list)
 
-    @commands.command(name='debug')
-    async def debug_info(self, ctx):
-        """Display all participant information (Admin/Creator only)"""
+    @commands.command(name='logs')
+    async def view_logs(self, ctx):
+        """Display last 10 lines from the log file (Admin/Creator only)"""
         # Check if user is admin or creator
         is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
         is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
@@ -407,38 +407,27 @@ class SecretSantaCog(commands.Cog):
         if not (is_admin or is_creator):
             await ctx.send("❌ Only the event creator or server administrators can use this command!")
             return
-            
-        # Get all participant information
-        self.db_manager.cursor.execute("""
-            SELECT name, wishlist, address
-            FROM participants
-        """)
-        results = self.db_manager.cursor.fetchall()
-        
-        if not results:
-            await ctx.send("❌ No participants found in the database.")
-            return
-            
-        # Create debug message
-        debug_msg = "🔍 **Secret Santa Debug Information:**\n\n"
-        for name, wishlist, address in results:
-            debug_msg += f"**Participant:** {name}\n"
-            debug_msg += f"**Wishlist:** {wishlist or 'Not set'}\n"
-            debug_msg += f"**Address:** {address or 'Not set'}\n"
-            debug_msg += "-" * 40 + "\n"
-        
-        # Split message if too long
-        if len(debug_msg) > 1900:
-            chunks = [debug_msg[i:i+1900] for i in range(0, len(debug_msg), 1900)]
-            for chunk in chunks:
-                await ctx.author.send(chunk)
-        else:
-            await ctx.author.send(debug_msg)
-            
-        if isinstance(ctx.channel, discord.TextChannel):
-            await ctx.send("📬 Debug information has been sent to your DMs!")
-            
-        log_event("DEBUG", f"Debug information accessed by {ctx.author.name}")
+
+        try:
+            with open('secret_santa.log', 'r') as log_file:
+                # Get last 10 lines
+                lines = log_file.readlines()
+                last_logs = lines[-10:] if len(lines) >= 10 else lines
+                
+                log_text = "📋 **Last Log Entries:**\n\n"
+                log_text += ''.join(last_logs)
+                
+                # Send logs via DM
+                try:
+                    await ctx.author.send(log_text)
+                    await ctx.send("📬 Debug information has been sent to your DMs!")
+                except discord.Forbidden:
+                    await ctx.send("❌ Couldn't send DM. Please check your privacy settings.")
+                    
+        except FileNotFoundError:
+            await ctx.send("❌ Log file not found!")
+        except Exception as e:
+            await ctx.send(f"❌ Error reading logs: {str(e)}")
 
     @commands.command(name='remind')
     async def remind_missing_info(self, ctx):
@@ -589,38 +578,6 @@ class SecretSantaCog(commands.Cog):
         except discord.Forbidden:
             await self._log_message_sent(sender_name, user.name, message_type, False)
             return False
-
-    @commands.command(name='debug')
-    async def debug_logs(self, ctx):
-        """Display last 10 lines from the log file (Admin/Creator only)"""
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can use this command!")
-            return
-
-        try:
-            with open('secret_santa.log', 'r') as log_file:
-                # Get last 10 lines
-                lines = log_file.readlines()
-                last_logs = lines[-10:] if len(lines) >= 10 else lines
-                
-                log_text = "📋 **Last Log Entries:**\n\n"
-                log_text += ''.join(last_logs)
-                
-                # Send logs via DM
-                try:
-                    await ctx.author.send(log_text)
-                    await ctx.send("📬 Debug information has been sent to your DMs!")
-                except discord.Forbidden:
-                    await ctx.send("❌ Couldn't send DM. Please check your privacy settings.")
-                    
-        except FileNotFoundError:
-            await ctx.send("❌ Log file not found!")
-        except Exception as e:
-            await ctx.send(f"❌ Error reading logs: {str(e)}")
 
 async def setup(bot):
     await bot.add_cog(SecretSantaCog(bot))
