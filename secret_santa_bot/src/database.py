@@ -12,6 +12,7 @@ class DatabaseManager:
 
         self.conn = psycopg2.connect(db_url)
         self.cursor = self.conn.cursor()
+        self._tables_created = False
         self.initialize_database()
 
     def initialize_database(self):
@@ -52,8 +53,14 @@ class DatabaseManager:
             # Rollback the aborted transaction
             self.conn.rollback()
             print("Checking if tables already exist...")
-            self._verify_tables_exist()
-            print("✓ Using existing database tables")
+            try:
+                self._verify_tables_exist()
+                print("✓ Using existing database tables")
+            except Exception as verify_error:
+                print(f"⚠️  Tables don't exist yet: {verify_error}")
+                print("✓ App will create tables on-demand when first needed")
+                # Don't fail - allow app to start and create tables later
+                self._tables_created = False
 
         except Exception as e:
             print(f"❌ Unexpected database error: {e}")
@@ -84,17 +91,59 @@ class DatabaseManager:
             pairings_exists = self.cursor.fetchone()[0]
 
             if not participants_exists or not pairings_exists:
-                raise Exception("Required database tables do not exist. Please create them manually or contact database administrator.")
+                return False
 
             print("✓ Database tables verified successfully")
+            return True
 
         except Exception as e:
             print(f"❌ Error verifying database tables: {e}")
-            print("Please ensure database tables are created manually.")
-            raise
+            return False
+
+    def _ensure_tables_exist(self):
+        """Ensure tables exist before performing operations"""
+        if not self._tables_created:
+            try:
+                # Try to create tables
+                create_participants_sql = """
+                    CREATE TABLE IF NOT EXISTS participants (
+                        id SERIAL PRIMARY KEY,
+                        user_id TEXT UNIQUE,
+                        name TEXT,
+                        wishlist TEXT,
+                        address TEXT,
+                        is_creator BOOLEAN DEFAULT FALSE
+                    )
+                """
+                create_pairings_sql = """
+                    CREATE TABLE IF NOT EXISTS pairings (
+                        id SERIAL PRIMARY KEY,
+                        giver_id TEXT,
+                        receiver_id TEXT,
+                        FOREIGN KEY(giver_id) REFERENCES participants(user_id),
+                        FOREIGN KEY(receiver_id) REFERENCES participants(user_id)
+                    )
+                """
+
+                self.cursor.execute(create_participants_sql)
+                self.cursor.execute(create_pairings_sql)
+                self.conn.commit()
+                self._tables_created = True
+                print("✓ Database tables created on-demand")
+
+            except psycopg2.errors.InsufficientPrivilege:
+                # If we can't create tables, check if they exist
+                if self._verify_tables_exist():
+                    self._tables_created = True
+                else:
+                    raise Exception("Database tables do not exist and cannot be created. Please contact database administrator.")
+            except Exception as e:
+                print(f"❌ Error creating tables on-demand: {e}")
+                raise
 
     def add_participant(self, user_id: str, name: str, is_creator: bool = False):
         """Add a participant to the Secret Santa event"""
+        self._ensure_tables_exist()
         self.cursor.execute("""
             INSERT INTO participants (user_id, name, is_creator)
             VALUES (%s, %s, %s)
@@ -111,6 +160,7 @@ class DatabaseManager:
         self.conn.commit()
 
     def get_pairings(self) -> List[Dict[str, str]]:
+        self._ensure_tables_exist()
         self.cursor.execute("""
             SELECT p1.name AS giver_name, p2.name AS receiver_name
             FROM pairings
@@ -120,6 +170,7 @@ class DatabaseManager:
         return [{"giver": row[0], "receiver": row[1]} for row in self.cursor.fetchall()]
 
     def get_all_participants(self) -> List[Dict[str, str]]:
+        self._ensure_tables_exist()
         self.cursor.execute("""
             SELECT user_id, name, wishlist
             FROM participants
@@ -163,9 +214,10 @@ class DatabaseManager:
         Assign Secret Santa partners and store in database
         Returns list of pairings with giver, receiver, and receiver's info
         """
+        self._ensure_tables_exist()
         if len(participants) < 2:
             raise ValueError("Need at least 2 participants to create pairings")
-        
+
         # Clear existing pairings
         self.cursor.execute("DELETE FROM pairings")
         
