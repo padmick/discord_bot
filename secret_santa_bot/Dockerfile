@@ -10,8 +10,9 @@ RUN apt-get update && apt-get install -y libpq-dev gcc && rm -rf /var/lib/apt/li
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
+# Copy source code and database setup
 COPY src/ src/
+COPY database_setup.sql .
 
 # Run the bot
 CMD ["python", "src/bot.py"]

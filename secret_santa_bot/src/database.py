@@ -9,43 +9,52 @@ class DatabaseManager:
         db_url = os.getenv('DATABASE_URL')
         if not db_url:
             raise ValueError("DATABASE_URL environment variable is not set")
-        
+
         self.conn = psycopg2.connect(db_url)
         self.cursor = self.conn.cursor()
-        self.create_tables()
+        self.initialize_database()
 
-    def create_tables(self):
-        # Create initial tables - handle permission errors gracefully
+    def initialize_database(self):
+        """Initialize database tables automatically on startup"""
+        print("Initializing database...")
+
+        # SQL to create tables
+        create_participants_sql = """
+            CREATE TABLE IF NOT EXISTS participants (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT UNIQUE,
+                name TEXT,
+                wishlist TEXT,
+                address TEXT,
+                is_creator BOOLEAN DEFAULT FALSE
+            )
+        """
+
+        create_pairings_sql = """
+            CREATE TABLE IF NOT EXISTS pairings (
+                id SERIAL PRIMARY KEY,
+                giver_id TEXT,
+                receiver_id TEXT,
+                FOREIGN KEY(giver_id) REFERENCES participants(user_id),
+                FOREIGN KEY(receiver_id) REFERENCES participants(user_id)
+            )
+        """
+
         try:
-            self.cursor.execute("""
-                CREATE TABLE IF NOT EXISTS participants (
-                    id SERIAL PRIMARY KEY,
-                    user_id TEXT UNIQUE,
-                    name TEXT,
-                    wishlist TEXT,
-                    address TEXT,
-                    is_creator BOOLEAN DEFAULT FALSE
-                )
-            """)
-            self.cursor.execute("""
-                CREATE TABLE IF NOT EXISTS pairings (
-                    id SERIAL PRIMARY KEY,
-                    giver_id TEXT,
-                    receiver_id TEXT,
-                    FOREIGN KEY(giver_id) REFERENCES participants(user_id),
-                    FOREIGN KEY(receiver_id) REFERENCES participants(user_id)
-                )
-            """)
-
+            # Try to create tables
+            self.cursor.execute(create_participants_sql)
+            self.cursor.execute(create_pairings_sql)
             self.conn.commit()
-            print("Database tables created successfully")
+            print("✓ Database tables created successfully")
+
         except psycopg2.errors.InsufficientPrivilege as e:
-            print(f"Database permission error: {e}")
-            print("Tables may already exist or need to be created by database administrator")
-            # Check if tables exist and have correct structure
+            print(f"⚠️  Permission denied creating tables: {e}")
+            print("Checking if tables already exist...")
             self._verify_tables_exist()
+            print("✓ Using existing database tables")
+
         except Exception as e:
-            print(f"Unexpected database error during table creation: {e}")
+            print(f"❌ Unexpected database error: {e}")
             raise
 
     def _verify_tables_exist(self):
