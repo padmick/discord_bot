@@ -3,8 +3,8 @@ FROM python:3.10-slim as builder
 
 WORKDIR /app
 
-# Install poetry
-RUN pip install poetry
+# Install poetry and the export plugin
+RUN pip install poetry poetry-plugin-export
 
 # Copy configuration files
 COPY pyproject.toml poetry.lock ./
