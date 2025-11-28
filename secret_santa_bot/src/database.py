@@ -15,28 +15,68 @@ class DatabaseManager:
         self.create_tables()
 
     def create_tables(self):
-        # Create initial tables
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS participants (
-                id SERIAL PRIMARY KEY,
-                user_id TEXT UNIQUE,
-                name TEXT,
-                wishlist TEXT,
-                address TEXT,
-                is_creator BOOLEAN DEFAULT FALSE
-            )
-        """)
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS pairings (
-                id SERIAL PRIMARY KEY,
-                giver_id TEXT,
-                receiver_id TEXT,
-                FOREIGN KEY(giver_id) REFERENCES participants(user_id),
-                FOREIGN KEY(receiver_id) REFERENCES participants(user_id)
-            )
-        """)
-        
-        self.conn.commit()
+        # Create initial tables - handle permission errors gracefully
+        try:
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS participants (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT UNIQUE,
+                    name TEXT,
+                    wishlist TEXT,
+                    address TEXT,
+                    is_creator BOOLEAN DEFAULT FALSE
+                )
+            """)
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pairings (
+                    id SERIAL PRIMARY KEY,
+                    giver_id TEXT,
+                    receiver_id TEXT,
+                    FOREIGN KEY(giver_id) REFERENCES participants(user_id),
+                    FOREIGN KEY(receiver_id) REFERENCES participants(user_id)
+                )
+            """)
+
+            self.conn.commit()
+            print("Database tables created successfully")
+        except psycopg2.errors.InsufficientPrivilege as e:
+            print(f"Database permission error: {e}")
+            print("Tables may already exist or need to be created by database administrator")
+            # Check if tables exist and have correct structure
+            self._verify_tables_exist()
+        except Exception as e:
+            print(f"Unexpected database error during table creation: {e}")
+            raise
+
+    def _verify_tables_exist(self):
+        """Verify that required tables exist and have correct structure"""
+        try:
+            # Check if participants table exists
+            self.cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_name = 'participants'
+                )
+            """)
+            participants_exists = self.cursor.fetchone()[0]
+
+            # Check if pairings table exists
+            self.cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_name = 'pairings'
+                )
+            """)
+            pairings_exists = self.cursor.fetchone()[0]
+
+            if not participants_exists or not pairings_exists:
+                raise Exception("Required database tables do not exist. Please create them manually or contact database administrator.")
+
+            print("Database tables verified successfully")
+
+        except Exception as e:
+            print(f"Error verifying database tables: {e}")
+            raise
 
     def add_participant(self, user_id: str, name: str, is_creator: bool = False):
         """Add a participant to the Secret Santa event"""
