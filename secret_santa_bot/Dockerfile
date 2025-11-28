@@ -6,15 +6,9 @@ WORKDIR /app
 # Install system dependencies for psycopg2
 RUN apt-get update && apt-get install -y libpq-dev gcc && rm -rf /var/lib/apt/lists/*
 
-# Install Poetry
-RUN pip install poetry==1.8.3
-
-# Copy dependency files
-COPY pyproject.toml poetry.lock ./
-
-# Regenerate lock file if needed and install dependencies
-RUN poetry lock --no-update || poetry lock
-RUN poetry install --only main --no-interaction --no-ansi
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
 COPY src/ src/
