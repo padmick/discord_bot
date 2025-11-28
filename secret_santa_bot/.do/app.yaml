@@ -1,0 +1,19 @@
+name: secret-santa-bot
+services:
+- name: worker
+  github:
+    branch: main
+    repo: USERNAME/REPO_NAME # Update this or select in UI
+    deploy_on_push: true
+  dockerfile_path: Dockerfile
+  envs:
+  - key: DISCORD_TOKEN
+    scope: RUN_TIME
+    value: "PLACEHOLDER_TOKEN"
+  - key: DATABASE_URL
+    scope: RUN_TIME
+    value: ${db.DATABASE_URL}
+databases:
+- engine: PG
+  name: db
+  version: "12"

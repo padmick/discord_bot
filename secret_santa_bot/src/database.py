@@ -1,10 +1,16 @@
-import sqlite3
+import psycopg2
+import os
 from typing import Dict, List, Optional
 import random
+from urllib.parse import urlparse
 
 class DatabaseManager:
-    def __init__(self, db_name: str = "secret_santa.db"):
-        self.conn = sqlite3.connect(db_name)
+    def __init__(self):
+        db_url = os.getenv('DATABASE_URL')
+        if not db_url:
+            raise ValueError("DATABASE_URL environment variable is not set")
+        
+        self.conn = psycopg2.connect(db_url)
         self.cursor = self.conn.cursor()
         self.create_tables()
 
@@ -12,15 +18,17 @@ class DatabaseManager:
         # Create initial tables
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS participants (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 user_id TEXT UNIQUE,
                 name TEXT,
-                wishlist TEXT
+                wishlist TEXT,
+                address TEXT,
+                is_creator BOOLEAN DEFAULT FALSE
             )
         """)
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS pairings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 giver_id TEXT,
                 receiver_id TEXT,
                 FOREIGN KEY(giver_id) REFERENCES participants(user_id),
@@ -28,29 +36,22 @@ class DatabaseManager:
             )
         """)
         
-        # Check if address and is_creator columns exist, if not add them
-        self.cursor.execute("PRAGMA table_info(participants)")
-        columns = [column[1] for column in self.cursor.fetchall()]
-        if 'address' not in columns:
-            self.cursor.execute("ALTER TABLE participants ADD COLUMN address TEXT")
-        if 'is_creator' not in columns:
-            self.cursor.execute("ALTER TABLE participants ADD COLUMN is_creator BOOLEAN DEFAULT 0")
-        
         self.conn.commit()
 
     def add_participant(self, user_id: str, name: str, is_creator: bool = False):
         """Add a participant to the Secret Santa event"""
         self.cursor.execute("""
-            INSERT OR REPLACE INTO participants 
-            (user_id, name, is_creator)
-            VALUES (?, ?, ?)
-        """, (user_id, name, 1 if is_creator else 0))
+            INSERT INTO participants (user_id, name, is_creator)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) 
+            DO UPDATE SET name = EXCLUDED.name, is_creator = EXCLUDED.is_creator
+        """, (user_id, name, is_creator))
         self.conn.commit()
 
     def set_wishlist(self, user_id: str, wishlist: str):
         self.cursor.execute("""
-            UPDATE participants SET wishlist = ?
-            WHERE user_id = ?
+            UPDATE participants SET wishlist = %s
+            WHERE user_id = %s
         """, (wishlist, user_id))
         self.conn.commit()
 
@@ -72,12 +73,13 @@ class DatabaseManager:
         return [{"user_id": row[0], "name": row[1], "wishlist": row[2]} for row in rows]
 
     def close_connection(self):
+        self.cursor.close()
         self.conn.close()
 
     def get_gifter_for_user(self, user_id: str) -> Optional[str]:
         """Get the ID of the person giving a gift to this user"""
         self.cursor.execute("""
-            SELECT giver_id FROM pairings WHERE receiver_id = ?
+            SELECT giver_id FROM pairings WHERE receiver_id = %s
         """, (user_id,))
         result = self.cursor.fetchone()
         return result[0] if result else None
@@ -85,7 +87,7 @@ class DatabaseManager:
     def get_giftee_for_user(self, user_id: str) -> Optional[str]:
         """Get the ID of the person this user is giving a gift to"""
         self.cursor.execute("""
-            SELECT receiver_id FROM pairings WHERE giver_id = ?
+            SELECT receiver_id FROM pairings WHERE giver_id = %s
         """, (user_id,))
         result = self.cursor.fetchone()
         return result[0] if result else None
@@ -96,7 +98,7 @@ class DatabaseManager:
             SELECT p.name, p.wishlist
             FROM pairings 
             JOIN participants p ON p.user_id = pairings.receiver_id
-            WHERE giver_id = ?
+            WHERE giver_id = %s
         """, (user_id,))
         result = self.cursor.fetchone()
         return {'name': result[0], 'wishlist': result[1] or "No wishlist set"} if result else None
@@ -129,14 +131,14 @@ class DatabaseManager:
             receivers.remove(receiver)
             
             # Get receiver's address
-            self.cursor.execute("SELECT address FROM participants WHERE user_id = ?", (receiver['user_id'],))
+            self.cursor.execute("SELECT address FROM participants WHERE user_id = %s", (receiver['user_id'],))
             address_result = self.cursor.fetchone()
             receiver_address = address_result[0] if address_result else "No address set"
             
             # Store pairing in database
             self.cursor.execute("""
                 INSERT INTO pairings (giver_id, receiver_id)
-                VALUES (?, ?)
+                VALUES (%s, %s)
             """, (giver['user_id'], receiver['user_id']))
             
             # Add to pairings list
@@ -164,8 +166,8 @@ class DatabaseManager:
 
     def set_address(self, user_id: str, address: str):
         self.cursor.execute("""
-            UPDATE participants SET address = ?
-            WHERE user_id = ?
+            UPDATE participants SET address = %s
+            WHERE user_id = %s
         """, (address, user_id))
         self.conn.commit()
 
@@ -189,7 +191,7 @@ class DatabaseManager:
         self.cursor.execute("""
             SELECT is_creator 
             FROM participants 
-            WHERE user_id = ?
+            WHERE user_id = %s
         """, (user_id,))
         result = self.cursor.fetchone()
         return bool(result and result[0])
