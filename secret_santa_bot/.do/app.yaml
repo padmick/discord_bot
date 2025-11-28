@@ -6,6 +6,8 @@ services:
     repo: USERNAME/REPO_NAME # Update this or select in UI
     deploy_on_push: true
   dockerfile_path: Dockerfile
+  health_check:
+    http_path: /health
   envs:
   - key: DISCORD_TOKEN
     scope: RUN_TIME

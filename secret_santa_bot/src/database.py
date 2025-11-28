@@ -49,6 +49,8 @@ class DatabaseManager:
 
         except psycopg2.errors.InsufficientPrivilege as e:
             print(f"⚠️  Permission denied creating tables: {e}")
+            # Rollback the aborted transaction
+            self.conn.rollback()
             print("Checking if tables already exist...")
             self._verify_tables_exist()
             print("✓ Using existing database tables")
@@ -60,6 +62,9 @@ class DatabaseManager:
     def _verify_tables_exist(self):
         """Verify that required tables exist and have correct structure"""
         try:
+            # Make sure we're not in an aborted transaction
+            self.conn.rollback()
+
             # Check if participants table exists
             self.cursor.execute("""
                 SELECT EXISTS (
@@ -81,10 +86,11 @@ class DatabaseManager:
             if not participants_exists or not pairings_exists:
                 raise Exception("Required database tables do not exist. Please create them manually or contact database administrator.")
 
-            print("Database tables verified successfully")
+            print("✓ Database tables verified successfully")
 
         except Exception as e:
-            print(f"Error verifying database tables: {e}")
+            print(f"❌ Error verifying database tables: {e}")
+            print("Please ensure database tables are created manually.")
             raise
 
     def add_participant(self, user_id: str, name: str, is_creator: bool = False):

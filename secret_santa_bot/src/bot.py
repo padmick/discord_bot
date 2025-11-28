@@ -2,6 +2,8 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 import os
+import threading
+from flask import Flask
 from database import DatabaseManager
 from utils import log_event
 from cogs.secret_santa import SecretSantaCog, CustomHelpCommand
@@ -51,6 +53,22 @@ async def on_command_error(ctx, error):
         error_msg = str(error)[:900]
         print(f"Error: {error}")
         await ctx.send(f"❌ An error occurred: {error_msg}")
+
+# Health check Flask app
+app = Flask(__name__)
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint for DigitalOcean"""
+    return {'status': 'healthy', 'bot_ready': bot.is_ready()}, 200
+
+def run_health_server():
+    """Run Flask health check server in a separate thread"""
+    app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
+
+# Start health check server in background thread
+health_thread = threading.Thread(target=run_health_server, daemon=True)
+health_thread.start()
 
 # Run bot
 if __name__ == "__main__":

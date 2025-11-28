@@ -14,5 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ src/
 COPY database_setup.sql .
 
+# Expose port for health checks
+EXPOSE 8080
+
 # Run the bot
 CMD ["python", "src/bot.py"]
