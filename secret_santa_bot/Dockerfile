@@ -1,18 +1,4 @@
-# Build stage
-FROM python:3.10-slim as builder
-
-WORKDIR /app
-
-# Install poetry
-RUN pip install poetry==1.8.3
-
-# Copy configuration files
-COPY pyproject.toml poetry.lock ./
-
-# Export dependencies to requirements.txt
-RUN poetry export -f requirements.txt -o requirements.txt --without-hashes
-
-# Final stage
+# Use a single stage build for simplicity
 FROM python:3.10-slim
 
 WORKDIR /app
@@ -20,11 +6,14 @@ WORKDIR /app
 # Install system dependencies for psycopg2
 RUN apt-get update && apt-get install -y libpq-dev gcc && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements from builder
-COPY --from=builder /app/requirements.txt .
+# Install Poetry
+RUN pip install poetry==1.8.3
 
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy dependency files
+COPY pyproject.toml poetry.lock ./
+
+# Install dependencies using Poetry
+RUN poetry install --only=main --no-dev --no-interaction --no-ansi
 
 # Copy source code
 COPY src/ src/
