@@ -3,15 +3,14 @@ FROM python:3.10-slim as builder
 
 WORKDIR /app
 
-# Install poetry and the export plugin
-RUN pip install poetry poetry-plugin-export
+# Install poetry
+RUN pip install poetry==1.8.3
 
 # Copy configuration files
 COPY pyproject.toml poetry.lock ./
 
-# Update lock file and export dependencies
-RUN poetry lock --no-update
-RUN poetry export -f requirements.txt --output requirements.txt --without-hashes
+# Export dependencies to requirements.txt
+RUN poetry export -f requirements.txt -o requirements.txt --without-hashes
 
 # Final stage
 FROM python:3.10-slim
