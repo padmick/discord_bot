@@ -9,7 +9,8 @@ RUN pip install poetry poetry-plugin-export
 # Copy configuration files
 COPY pyproject.toml poetry.lock ./
 
-# Export dependencies to requirements.txt
+# Update lock file and export dependencies
+RUN poetry lock --no-update
 RUN poetry export -f requirements.txt --output requirements.txt --without-hashes
 
 # Final stage
