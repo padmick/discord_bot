@@ -115,7 +115,7 @@ class DatabaseManager:
             return False
 
     def _ensure_tables_exist(self):
-        """Ensure tables exist before performing operations"""
+        """Ensure tables exist before performing operations - always tries to create if needed"""
         if not self._tables_created:
             # Always rollback any aborted transactions first
             self.conn.rollback()
@@ -149,28 +149,40 @@ class DatabaseManager:
                 print("✓ Database tables created on-demand")
 
             except psycopg2.errors.InsufficientPrivilege:
-                # Transaction might be aborted, rollback and check if tables exist
+                # Cannot create tables due to permissions
                 self.conn.rollback()
+                print("⚠️  Cannot create database tables (insufficient permissions)")
+                # Check if tables actually exist despite permission error
                 if self._verify_tables_exist():
                     self._tables_created = True
-                    print("✓ Using existing database tables")
+                    print("✓ Tables exist - using them despite permission restrictions")
                 else:
-                    raise Exception("Database tables do not exist and cannot be created. Please contact database administrator.")
+                    print("🔧 Tables don't exist and can't be created")
+                    print("🔧 Bot will show friendly error messages to users")
+                    # Mark as "will try again" - don't set _tables_created = True
+                    # This allows operations to proceed and show user-friendly errors
             except Exception as e:
-                print(f"❌ Error creating tables on-demand: {e}")
-                self.conn.rollback()  # Clean up any aborted transaction
-                raise
+                print(f"❌ Unexpected error creating tables: {e}")
+                self.conn.rollback()
+                # Continue anyway - let individual operations handle errors gracefully
 
     def add_participant(self, user_id: str, name: str, is_creator: bool = False):
         """Add a participant to the Secret Santa event"""
-        self._ensure_tables_exist()
-        self.cursor.execute("""
-            INSERT INTO participants (user_id, name, is_creator)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (user_id) 
-            DO UPDATE SET name = EXCLUDED.name, is_creator = EXCLUDED.is_creator
-        """, (user_id, name, is_creator))
-        self.conn.commit()
+        try:
+            self._ensure_tables_exist()
+            self.cursor.execute("""
+                INSERT INTO participants (user_id, name, is_creator)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id)
+                DO UPDATE SET name = EXCLUDED.name, is_creator = EXCLUDED.is_creator
+            """, (user_id, name, is_creator))
+            self.conn.commit()
+            return True
+        except psycopg2.errors.UndefinedTable:
+            raise Exception("❌ Database tables are not available. Please contact the bot administrator to set up the database.")
+        except Exception as e:
+            print(f"Error adding participant: {e}")
+            raise
 
     def set_wishlist(self, user_id: str, wishlist: str):
         self.cursor.execute("""
@@ -190,13 +202,19 @@ class DatabaseManager:
         return [{"giver": row[0], "receiver": row[1]} for row in self.cursor.fetchall()]
 
     def get_all_participants(self) -> List[Dict[str, str]]:
-        self._ensure_tables_exist()
-        self.cursor.execute("""
-            SELECT user_id, name, wishlist
-            FROM participants
-        """)
-        rows = self.cursor.fetchall()
-        return [{"user_id": row[0], "name": row[1], "wishlist": row[2]} for row in rows]
+        try:
+            self._ensure_tables_exist()
+            self.cursor.execute("""
+                SELECT user_id, name, wishlist
+                FROM participants
+            """)
+            rows = self.cursor.fetchall()
+            return [{"user_id": row[0], "name": row[1], "wishlist": row[2]} for row in rows]
+        except psycopg2.errors.UndefinedTable:
+            return []  # No participants if tables don't exist
+        except Exception as e:
+            print(f"Error getting participants: {e}")
+            return []
 
     def close_connection(self):
         self.cursor.close()
@@ -291,10 +309,16 @@ class DatabaseManager:
 
     def is_event_active(self) -> bool:
         """Check if there's an active Secret Santa event"""
-        self._ensure_tables_exist()
-        self.cursor.execute("SELECT COUNT(*) FROM participants")
-        count = self.cursor.fetchone()[0]
-        return count > 0
+        try:
+            self._ensure_tables_exist()
+            self.cursor.execute("SELECT COUNT(*) FROM participants")
+            count = self.cursor.fetchone()[0]
+            return count > 0
+        except psycopg2.errors.UndefinedTable:
+            return False  # No active event if tables don't exist
+        except Exception as e:
+            print(f"Error checking event status: {e}")
+            return False
 
     def set_address(self, user_id: str, address: str):
         self._ensure_tables_exist()

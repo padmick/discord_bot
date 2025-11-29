@@ -15,6 +15,9 @@ services:
   - key: DATABASE_URL
     scope: RUN_TIME
     value: ${db.DATABASE_URL}
+  - key: SETUP_DATABASE
+    scope: RUN_TIME
+    value: "true"
 databases:
 - engine: PG
   name: db
