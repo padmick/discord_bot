@@ -220,3 +220,33 @@ class DatabaseManager:
         """, (user_id,))
         result = self.cursor.fetchone()
         return bool(result and result[0])
+
+    def remove_participant(self, user_id: str) -> bool:
+        """Remove a participant from the Secret Santa event"""
+        # First check if participant exists
+        self._safe_execute("""
+            SELECT user_id, is_creator FROM participants WHERE user_id = %s
+        """, (user_id,))
+        result = self.cursor.fetchone()
+        
+        if not result:
+            return False
+        
+        # Remove any pairings involving this user
+        self._safe_execute("DELETE FROM pairings WHERE giver_id = %s OR receiver_id = %s", (user_id, user_id))
+        
+        # Remove the participant
+        self._safe_execute("DELETE FROM participants WHERE user_id = %s", (user_id,))
+        self._safe_commit()
+        return True
+
+    def get_participant_by_name(self, name: str) -> Optional[Dict[str, str]]:
+        """Find a participant by their name (case-insensitive partial match)"""
+        self._safe_execute("""
+            SELECT user_id, name FROM participants 
+            WHERE LOWER(name) LIKE LOWER(%s)
+        """, (f"%{name}%",))
+        result = self.cursor.fetchone()
+        if result:
+            return {"user_id": result[0], "name": result[1]}
+        return None

@@ -2,6 +2,12 @@ import discord
 from discord.ext import commands
 from utils import log_event
 import asyncio
+import time
+from collections import defaultdict
+
+# Rate limiting configuration
+RATE_LIMIT_COMMANDS = 5  # Max commands per window
+RATE_LIMIT_WINDOW = 30   # Window in seconds
 
 class CustomHelpCommand(commands.DefaultHelpCommand):
     async def send_bot_help(self, mapping):
@@ -19,6 +25,8 @@ class CustomHelpCommand(commands.DefaultHelpCommand):
         help_text += "s!remind - Send reminders to participants with missing info\n"
         help_text += "s!info - Display bot information\n"
         help_text += "s!broadcast - Send a message to all participants (admin only)\n"
+        help_text += "s!remove - Remove a participant from the event (admin only)\n"
+        help_text += "s!ratelimit - Set rate limiting for commands (admin only)\n"
         help_text += "s!logs - View recent log entries (admin only)\n"
         
         # Split into multiple messages if too long
@@ -33,6 +41,45 @@ class SecretSantaCog(commands.Cog):
     def __init__(self, bot, db_manager):
         self.bot = bot
         self.db_manager = db_manager
+        # Rate limiting: {user_id: [timestamp1, timestamp2, ...]}
+        self.user_command_history = defaultdict(list)
+        self.rate_limit_enabled = True
+        self.rate_limit_commands = RATE_LIMIT_COMMANDS
+        self.rate_limit_window = RATE_LIMIT_WINDOW
+
+    def _check_rate_limit(self, user_id: str) -> tuple[bool, int]:
+        """Check if user is rate limited. Returns (is_limited, seconds_remaining)"""
+        if not self.rate_limit_enabled:
+            return False, 0
+        
+        current_time = time.time()
+        # Clean old entries
+        self.user_command_history[user_id] = [
+            t for t in self.user_command_history[user_id] 
+            if current_time - t < self.rate_limit_window
+        ]
+        
+        # Check if over limit
+        if len(self.user_command_history[user_id]) >= self.rate_limit_commands:
+            oldest = min(self.user_command_history[user_id])
+            seconds_remaining = int(self.rate_limit_window - (current_time - oldest))
+            return True, max(1, seconds_remaining)
+        
+        # Record this command
+        self.user_command_history[user_id].append(current_time)
+        return False, 0
+
+    async def cog_before_invoke(self, ctx):
+        """Called before every command - check rate limit"""
+        # Skip rate limit for admins/creators
+        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
+        if is_admin:
+            return
+        
+        is_limited, seconds = self._check_rate_limit(str(ctx.author.id))
+        if is_limited:
+            await ctx.send(f"⏳ Slow down! You're sending commands too fast. Try again in {seconds} seconds.")
+            raise commands.CommandError("Rate limited")
 
     async def _show_potential_matches(self, ctx, pairings) -> bool:
         """Show potential matches to creator and get confirmation"""
@@ -521,6 +568,136 @@ class SecretSantaCog(commands.Cog):
         )
         await ctx.send(status_msg)
         log_event("BROADCAST", f"Message broadcast by {ctx.author.name} to {success_count} participants")
+
+    @commands.command(name='remove')
+    async def remove_participant(self, ctx, *, user_identifier: str):
+        """Remove a participant from the Secret Santa event (Admin/Creator only)"""
+        # Check if user is admin or creator
+        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
+        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
+        
+        if not (is_admin or is_creator):
+            await ctx.send("❌ Only the event creator or server administrators can remove participants!")
+            return
+        
+        if not self.db_manager.is_event_active():
+            await ctx.send("❌ There is no active Secret Santa event!")
+            return
+        
+        # Try to find user by mention, ID, or name
+        target_user_id = None
+        target_name = None
+        
+        # Check if it's a mention
+        if ctx.message.mentions:
+            target_user = ctx.message.mentions[0]
+            target_user_id = str(target_user.id)
+            target_name = target_user.name
+        # Check if it's a user ID
+        elif user_identifier.isdigit():
+            target_user_id = user_identifier
+            user = self.bot.get_user(int(user_identifier))
+            target_name = user.name if user else f"User {user_identifier}"
+        # Try to find by name
+        else:
+            participant = self.db_manager.get_participant_by_name(user_identifier)
+            if participant:
+                target_user_id = participant['user_id']
+                target_name = participant['name']
+            else:
+                await ctx.send(f"❌ Could not find participant matching '{user_identifier}'")
+                return
+        
+        # Check if trying to remove the creator
+        if self.db_manager.is_creator_or_admin(target_user_id):
+            await ctx.send("❌ Cannot remove the event creator! Use `s!cancel` to cancel the entire event instead.")
+            return
+        
+        # Remove the participant
+        success = self.db_manager.remove_participant(target_user_id)
+        
+        if success:
+            log_event("REMOVE", f"{target_name} was removed from Secret Santa by {ctx.author.name}")
+            await ctx.send(f"✅ {target_name} has been removed from the Secret Santa event.")
+            
+            # Try to notify the removed user
+            try:
+                removed_user = self.bot.get_user(int(target_user_id))
+                if removed_user:
+                    await removed_user.send(
+                        "ℹ️ You have been removed from the Secret Santa event by an administrator.\n"
+                        "If you believe this was a mistake, please contact the event organizer."
+                    )
+            except discord.Forbidden:
+                pass  # Can't DM the user, that's okay
+        else:
+            await ctx.send(f"❌ {target_name} is not a participant in the Secret Santa event.")
+
+    @commands.command(name='ratelimit')
+    async def set_rate_limit(self, ctx, action: str, value: int = None):
+        """Configure rate limiting for bot commands (Admin/Creator only)
+        
+        Usage:
+        s!ratelimit on - Enable rate limiting
+        s!ratelimit off - Disable rate limiting
+        s!ratelimit commands 10 - Set max commands per window
+        s!ratelimit window 60 - Set window duration in seconds
+        s!ratelimit status - Show current settings
+        """
+        # Check if user is admin or creator
+        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
+        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
+        
+        if not (is_admin or is_creator):
+            await ctx.send("❌ Only the event creator or server administrators can configure rate limiting!")
+            return
+        
+        action = action.lower()
+        
+        if action == 'on':
+            self.rate_limit_enabled = True
+            await ctx.send("✅ Rate limiting enabled!")
+            log_event("RATELIMIT", f"Rate limiting enabled by {ctx.author.name}")
+            
+        elif action == 'off':
+            self.rate_limit_enabled = False
+            await ctx.send("✅ Rate limiting disabled!")
+            log_event("RATELIMIT", f"Rate limiting disabled by {ctx.author.name}")
+            
+        elif action == 'commands':
+            if value is None or value < 1:
+                await ctx.send("❌ Please provide a valid number of commands (minimum 1)")
+                return
+            self.rate_limit_commands = value
+            await ctx.send(f"✅ Rate limit set to {value} commands per {self.rate_limit_window} seconds")
+            log_event("RATELIMIT", f"Rate limit commands set to {value} by {ctx.author.name}")
+            
+        elif action == 'window':
+            if value is None or value < 5:
+                await ctx.send("❌ Please provide a valid window duration (minimum 5 seconds)")
+                return
+            self.rate_limit_window = value
+            await ctx.send(f"✅ Rate limit window set to {value} seconds")
+            log_event("RATELIMIT", f"Rate limit window set to {value}s by {ctx.author.name}")
+            
+        elif action == 'status':
+            status = "enabled" if self.rate_limit_enabled else "disabled"
+            await ctx.send(
+                f"⚙️ **Rate Limit Settings:**\n"
+                f"Status: {status}\n"
+                f"Max commands: {self.rate_limit_commands}\n"
+                f"Window: {self.rate_limit_window} seconds\n\n"
+                f"Users can send {self.rate_limit_commands} commands every {self.rate_limit_window} seconds."
+            )
+        else:
+            await ctx.send(
+                "❌ Invalid action! Use:\n"
+                "`s!ratelimit on` - Enable rate limiting\n"
+                "`s!ratelimit off` - Disable rate limiting\n"
+                "`s!ratelimit commands <number>` - Set max commands\n"
+                "`s!ratelimit window <seconds>` - Set time window\n"
+                "`s!ratelimit status` - Show current settings"
+            )
 
     async def _send_match_notification(self, giver, receiver, wishlist, address):
         """Helper method to send match notification, handling long messages"""
