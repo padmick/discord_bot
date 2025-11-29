@@ -1,5 +1,6 @@
 import psycopg2
 import os
+import re
 from typing import Dict, List, Optional
 import random
 from urllib.parse import urlparse
@@ -10,8 +11,10 @@ class DatabaseManager:
         if db_url:
             # Modify DATABASE_URL to use defaultdb instead of named database
             # Parse the URL and replace the database name
-            if 'dev-db-' in db_url and '/dev-db-' in db_url:
-                db_url = db_url.replace('/dev-db-', '/defaultdb')
+            import re
+            if 'dev-db-' in db_url:
+                # Replace /dev-db-XXXXX/ with /defaultdb/
+                db_url = re.sub(r'/dev-db-[^/?]+', '/defaultdb', db_url)
                 print("🔧 Modified DATABASE_URL to use defaultdb for dev database permissions")
 
         if not db_url:
