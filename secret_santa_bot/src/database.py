@@ -184,6 +184,7 @@ class DatabaseManager:
 
     def get_gifter_for_user(self, user_id: str) -> Optional[str]:
         """Get the ID of the person giving a gift to this user"""
+        self._ensure_tables_exist()
         self.cursor.execute("""
             SELECT giver_id FROM pairings WHERE receiver_id = %s
         """, (user_id,))
@@ -192,6 +193,7 @@ class DatabaseManager:
 
     def get_giftee_for_user(self, user_id: str) -> Optional[str]:
         """Get the ID of the person this user is giving a gift to"""
+        self._ensure_tables_exist()
         self.cursor.execute("""
             SELECT receiver_id FROM pairings WHERE giver_id = %s
         """, (user_id,))
@@ -200,6 +202,7 @@ class DatabaseManager:
 
     def get_partner_info(self, user_id: str) -> Optional[Dict[str, str]]:
         """Get information about the user's gift recipient"""
+        self._ensure_tables_exist()
         self.cursor.execute("""
             SELECT p.name, p.wishlist
             FROM pairings 
@@ -261,17 +264,20 @@ class DatabaseManager:
 
     def cancel_secret_santa(self):
         """Cancel the Secret Santa event by clearing all data"""
+        self._ensure_tables_exist()
         self.cursor.execute("DELETE FROM pairings")
         self.cursor.execute("DELETE FROM participants")
         self.conn.commit()
 
     def is_event_active(self) -> bool:
         """Check if there's an active Secret Santa event"""
+        self._ensure_tables_exist()
         self.cursor.execute("SELECT COUNT(*) FROM participants")
         count = self.cursor.fetchone()[0]
         return count > 0
 
     def set_address(self, user_id: str, address: str):
+        self._ensure_tables_exist()
         self.cursor.execute("""
             UPDATE participants SET address = %s
             WHERE user_id = %s
@@ -280,6 +286,7 @@ class DatabaseManager:
 
     def check_missing_info(self) -> List[Dict[str, str]]:
         """Returns list of users with missing wishlist or address"""
+        self._ensure_tables_exist()
         self.cursor.execute("""
             SELECT user_id, name, wishlist, address
             FROM participants
@@ -295,6 +302,7 @@ class DatabaseManager:
 
     def is_creator_or_admin(self, user_id: str) -> bool:
         """Check if user is the creator of the current event"""
+        self._ensure_tables_exist()
         self.cursor.execute("""
             SELECT is_creator 
             FROM participants 
