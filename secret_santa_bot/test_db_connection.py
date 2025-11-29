@@ -19,8 +19,8 @@ def test_connection():
         # Modify DATABASE_URL to use defaultdb instead of named database
         import re
         if 'dev-db-' in db_url:
-            # Replace /dev-db-XXXXX/ with /defaultdb/
-            db_url = re.sub(r'/dev-db-[^/?]+', '/defaultdb', db_url)
+            # Replace /dev-db-XXXXX with /defaultdb (before ? or end of string)
+            db_url = re.sub(r'/dev-db-[^/?]+(?=\?|/$|$)', '/defaultdb', db_url)
             print("🔧 Modified DATABASE_URL to use defaultdb for dev database permissions")
 
     if not db_url:
