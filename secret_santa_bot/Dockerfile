@@ -17,5 +17,5 @@ COPY database_setup.sql setup_database.py ./
 # Expose port for health checks
 EXPOSE 8080
 
-# Setup database if requested, then run the bot
-CMD ["sh", "-c", "if [ \"$SETUP_DATABASE\" = \"true\" ]; then python setup_database.py; fi && python src/bot.py"]
+# Run the bot (database setup will happen after startup)
+CMD ["python", "src/bot.py"]
