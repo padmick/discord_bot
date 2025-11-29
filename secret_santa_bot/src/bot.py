@@ -24,8 +24,13 @@ bot = commands.Bot(
     intents=intents
 )
 
-# Initialize database
-db_manager = DatabaseManager()
+# Initialize database (may be None if not configured yet)
+db_manager = None
+try:
+    db_manager = DatabaseManager()
+except Exception as e:
+    print(f"⚠️  Database not available yet: {e}")
+    print("🔧 Bot will start without database - add database and redeploy")
 
 # Set up help command
 bot.help_command = CustomHelpCommand()
@@ -34,7 +39,10 @@ bot.help_command = CustomHelpCommand()
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     # Add cogs here after bot is ready
-    await bot.add_cog(SecretSantaCog(bot, db_manager))
+    if db_manager:
+        await bot.add_cog(SecretSantaCog(bot, db_manager))
+    else:
+        print("⚠️  Secret Santa commands disabled - no database connection")
     await bot.change_presence(activity=discord.Game(name="Secret Santa"))
 
 def check_permissions(ctx):
