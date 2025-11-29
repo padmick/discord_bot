@@ -26,8 +26,20 @@ def setup_database():
         db_password = os.getenv('DB_PASSWORD')
 
         if all([db_host, db_port, db_name, db_user, db_password]):
-            db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-            print("🔧 Using individual database environment variables...")
+            # For dev databases, try defaultdb instead of the specific database name
+            default_db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/defaultdb"
+            print("🔧 Trying defaultdb for dev database...")
+
+            try:
+                # Test connection to defaultdb
+                test_conn = psycopg2.connect(default_db_url)
+                test_conn.close()
+                db_url = default_db_url
+                print("✅ Using defaultdb database")
+            except psycopg2.Error:
+                # Fall back to the named database
+                db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+                print(f"⚠️  defaultdb not accessible, using named database: {db_name}")
         else:
             print("❌ Neither DATABASE_URL nor individual DB_* environment variables are set")
             return False
