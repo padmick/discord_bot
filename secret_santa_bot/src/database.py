@@ -7,6 +7,13 @@ from urllib.parse import urlparse
 class DatabaseManager:
     def __init__(self):
         db_url = os.getenv('DATABASE_URL')
+        if db_url:
+            # Modify DATABASE_URL to use defaultdb instead of named database
+            # Parse the URL and replace the database name
+            if 'dev-db-' in db_url and '/dev-db-' in db_url:
+                db_url = db_url.replace('/dev-db-', '/defaultdb')
+                print("🔧 Modified DATABASE_URL to use defaultdb for dev database permissions")
+
         if not db_url:
             # Try to construct URL from individual variables, using defaultdb for dev databases
             db_host = os.getenv('DB_HOST')
@@ -22,6 +29,7 @@ class DatabaseManager:
         if not db_url:
             raise ValueError("DATABASE_URL environment variable is not set")
 
+        print(f"🔧 Final database URL: {db_url.replace(db_url.split('@')[0].split(':')[1], '***') if '@' in db_url else '***'}")
         self.conn = psycopg2.connect(db_url)
         self.cursor = self.conn.cursor()
         self._tables_created = False

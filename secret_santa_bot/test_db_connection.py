@@ -13,18 +13,27 @@ load_dotenv()
 def test_connection():
     """Test connection to defaultdb"""
 
-    # Get individual environment variables
-    db_host = os.getenv('DB_HOST')
-    db_port = os.getenv('DB_PORT')
-    db_user = os.getenv('DB_USER')
-    db_password = os.getenv('DB_PASSWORD')
+    # Try DATABASE_URL first, modify if needed
+    db_url = os.getenv('DATABASE_URL')
+    if db_url:
+        # Modify DATABASE_URL to use defaultdb instead of named database
+        if 'dev-db-' in db_url and '/dev-db-' in db_url:
+            db_url = db_url.replace('/dev-db-', '/defaultdb')
+            print("🔧 Modified DATABASE_URL to use defaultdb for dev database permissions")
 
-    if not all([db_host, db_port, db_user, db_password]):
-        print("❌ Missing database environment variables")
-        return False
+    if not db_url:
+        # Fall back to individual environment variables
+        db_host = os.getenv('DB_HOST')
+        db_port = os.getenv('DB_PORT')
+        db_user = os.getenv('DB_USER')
+        db_password = os.getenv('DB_PASSWORD')
 
-    # Try defaultdb
-    db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/defaultdb"
+        if not all([db_host, db_port, db_user, db_password]):
+            print("❌ Missing database environment variables")
+            return False
+
+        # Try defaultdb
+        db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/defaultdb"
 
     try:
         print(f"🔧 Testing connection to defaultdb...")

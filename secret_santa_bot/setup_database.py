@@ -16,6 +16,11 @@ def setup_database():
 
     # Try DATABASE_URL first, then individual variables
     db_url = os.getenv('DATABASE_URL')
+    if db_url:
+        # Modify DATABASE_URL to use defaultdb instead of named database
+        if 'dev-db-' in db_url and '/dev-db-' in db_url:
+            db_url = db_url.replace('/dev-db-', '/defaultdb')
+            print("🔧 Modified DATABASE_URL to use defaultdb for dev database permissions")
 
     if not db_url:
         # Try individual environment variables
