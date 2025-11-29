@@ -305,10 +305,10 @@ class SecretSantaCog(commands.Cog):
         user_id = str(ctx.author.id)
         
         # Get user's current info from database
-        self.db_manager.cursor.execute("""
+        self.db_manager._safe_execute("""
             SELECT wishlist, address
             FROM participants
-            WHERE user_id = ?
+            WHERE user_id = %s
         """, (user_id,))
         result = self.db_manager.cursor.fetchone()
         
@@ -346,10 +346,10 @@ class SecretSantaCog(commands.Cog):
             return
             
         # Get receiver's details
-        self.db_manager.cursor.execute("""
+        self.db_manager._safe_execute("""
             SELECT name, wishlist, address
             FROM participants
-            WHERE user_id = ?
+            WHERE user_id = %s
         """, (receiver_id,))
         result = self.db_manager.cursor.fetchone()
         
