@@ -21,25 +21,13 @@ def setup_database():
         # Try individual environment variables
         db_host = os.getenv('DB_HOST')
         db_port = os.getenv('DB_PORT')
-        db_name = os.getenv('DB_NAME')
         db_user = os.getenv('DB_USER')
         db_password = os.getenv('DB_PASSWORD')
 
-        if all([db_host, db_port, db_name, db_user, db_password]):
-            # For dev databases, try defaultdb instead of the specific database name
-            default_db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/defaultdb"
-            print("🔧 Trying defaultdb for dev database...")
-
-            try:
-                # Test connection to defaultdb
-                test_conn = psycopg2.connect(default_db_url)
-                test_conn.close()
-                db_url = default_db_url
-                print("✅ Using defaultdb database")
-            except psycopg2.Error:
-                # Fall back to the named database
-                db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-                print(f"⚠️  defaultdb not accessible, using named database: {db_name}")
+        if all([db_host, db_port, db_user, db_password]):
+            # For dev databases, ALWAYS use defaultdb as per DigitalOcean docs
+            db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/defaultdb"
+            print("🔧 Using defaultdb for dev database (required for permissions)")
         else:
             print("❌ Neither DATABASE_URL nor individual DB_* environment variables are set")
             return False

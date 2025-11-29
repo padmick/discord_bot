@@ -8,25 +8,16 @@ class DatabaseManager:
     def __init__(self):
         db_url = os.getenv('DATABASE_URL')
         if not db_url:
-            # Try to construct URL from individual variables, preferring defaultdb
+            # Try to construct URL from individual variables, using defaultdb for dev databases
             db_host = os.getenv('DB_HOST')
             db_port = os.getenv('DB_PORT')
             db_user = os.getenv('DB_USER')
             db_password = os.getenv('DB_PASSWORD')
 
             if all([db_host, db_port, db_user, db_password]):
-                # Try defaultdb first for dev databases
-                try:
-                    test_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/defaultdb"
-                    test_conn = psycopg2.connect(test_url)
-                    test_conn.close()
-                    db_url = test_url
-                    print("🔧 Using defaultdb for application")
-                except psycopg2.Error:
-                    # Fall back to named database from DB_NAME
-                    db_name = os.getenv('DB_NAME', 'defaultdb')
-                    db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-                    print(f"🔧 Using named database: {db_name}")
+                # Always use defaultdb for dev databases as per DigitalOcean requirements
+                db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/defaultdb"
+                print("🔧 Using defaultdb for application (required for dev database permissions)")
 
         if not db_url:
             raise ValueError("DATABASE_URL environment variable is not set")

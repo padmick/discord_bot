@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code and database setup
 COPY src/ src/
-COPY database_setup.sql setup_database.py ./
+COPY database_setup.sql setup_database.py test_db_connection.py ./
 
 # Expose port for health checks
 EXPOSE 8080

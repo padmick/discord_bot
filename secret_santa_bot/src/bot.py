@@ -78,7 +78,22 @@ def delayed_database_setup():
     time.sleep(10)  # Wait 10 seconds for permissions to be fully granted
 
     try:
-        print('🔧 Running delayed database setup...')
+        print('🔧 Testing database connection first...')
+        test_result = subprocess.run(['python', 'test_db_connection.py'],
+                                   capture_output=True, text=True, cwd='/app')
+
+        if test_result.returncode != 0:
+            print('❌ Database connection test failed:')
+            if test_result.stdout:
+                print(test_result.stdout)
+            if test_result.stderr:
+                print('Errors:', test_result.stderr)
+            print('⚠️  Skipping database setup due to connection issues')
+            return
+
+        print('✅ Database connection test passed!')
+        print('🔧 Running database setup...')
+
         result = subprocess.run(['python', 'setup_database.py'],
                               capture_output=True, text=True, cwd='/app')
 
