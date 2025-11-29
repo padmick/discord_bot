@@ -53,11 +53,9 @@ class DatabaseManager:
             # Rollback the aborted transaction
             self.conn.rollback()
             print("Checking if tables already exist...")
-            try:
-                self._verify_tables_exist()
+            if self._verify_tables_exist():
                 print("✓ Using existing database tables")
-            except Exception as verify_error:
-                print(f"⚠️  Tables don't exist yet: {verify_error}")
+            else:
                 print("✓ App will create tables on-demand when first needed")
                 # Don't fail - allow app to start and create tables later
                 self._tables_created = False
@@ -72,29 +70,45 @@ class DatabaseManager:
             # Make sure we're not in an aborted transaction
             self.conn.rollback()
 
-            # Check if participants table exists
-            self.cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables
-                    WHERE table_name = 'participants'
-                )
-            """)
-            participants_exists = self.cursor.fetchone()[0]
+            # Try to check if tables exist by querying information_schema
+            try:
+                self.cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_name = 'participants'
+                    )
+                """)
+                participants_exists = self.cursor.fetchone()[0]
 
-            # Check if pairings table exists
-            self.cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables
-                    WHERE table_name = 'pairings'
-                )
-            """)
-            pairings_exists = self.cursor.fetchone()[0]
+                self.cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_name = 'pairings'
+                    )
+                """)
+                pairings_exists = self.cursor.fetchone()[0]
 
-            if not participants_exists or not pairings_exists:
+                if participants_exists and pairings_exists:
+                    return True
+
+            except psycopg2.Error:
+                # If information_schema query fails (permission issues), try direct table access
+                print("⚠️  Cannot query information_schema, trying direct table access...")
+
+            # Fallback: try to query the tables directly
+            try:
+                self.cursor.execute("SELECT 1 FROM participants LIMIT 1")
+                self.cursor.fetchone()  # Consume the result
+                self.cursor.execute("SELECT 1 FROM pairings LIMIT 1")
+                self.cursor.fetchone()  # Consume the result
+                return True
+            except psycopg2.errors.UndefinedTable:
+                return False
+            except psycopg2.Error:
+                # Other database errors, assume tables don't exist
                 return False
 
-            print("✓ Database tables verified successfully")
-            return True
+            return False
 
         except Exception as e:
             print(f"❌ Error verifying database tables: {e}")
@@ -103,6 +117,9 @@ class DatabaseManager:
     def _ensure_tables_exist(self):
         """Ensure tables exist before performing operations"""
         if not self._tables_created:
+            # Always rollback any aborted transactions first
+            self.conn.rollback()
+
             try:
                 # Try to create tables
                 create_participants_sql = """
@@ -132,13 +149,16 @@ class DatabaseManager:
                 print("✓ Database tables created on-demand")
 
             except psycopg2.errors.InsufficientPrivilege:
-                # If we can't create tables, check if they exist
+                # Transaction might be aborted, rollback and check if tables exist
+                self.conn.rollback()
                 if self._verify_tables_exist():
                     self._tables_created = True
+                    print("✓ Using existing database tables")
                 else:
                     raise Exception("Database tables do not exist and cannot be created. Please contact database administrator.")
             except Exception as e:
                 print(f"❌ Error creating tables on-demand: {e}")
+                self.conn.rollback()  # Clean up any aborted transaction
                 raise
 
     def add_participant(self, user_id: str, name: str, is_creator: bool = False):
