@@ -1,761 +1,669 @@
-import discord
-from discord.ext import commands
-from utils import log_event
+"""Discord adapter for Secret Santa commands."""
+
+from __future__ import annotations
+
 import asyncio
 import time
-from collections import defaultdict
+from datetime import date
 
-# Rate limiting configuration
-RATE_LIMIT_COMMANDS = 5  # Max commands per window
-RATE_LIMIT_WINDOW = 30   # Window in seconds
+import discord
+from discord.ext import commands, tasks
+
+from services import (
+    EventService,
+    RateLimiter,
+    anonymous_message_log,
+    assignment_text,
+    format_help,
+    resolve_dm_events,
+)
+from utils import log_event
+from views import ProfileView, ReplyView
+
+INFO_TEXT = "\n".join(
+    [
+        "Secret Santa runs one open event per server.",
+        "Phases: signup, locked, drawn, and done.",
+        "The organizer is not in the draw until they join.",
+        "The draw is not shown to the organizer. s!reveal is an explicit choice that breaks anonymity.",
+        "Wishlists and addresses typed in a server channel are deleted. Prefer /profile, which uses a private form.",
+        "A digital gift does not need a shipping address.",
+        "Use s!exclude so two people are not assigned to each other.",
+    ]
+)
+
+
+class RateLimited(commands.CommandError):
+    """Stops the command after the slow-down notice.
+
+    The bot error handler ignores this so the user only sees the one notice.
+    """
+
 
 class CustomHelpCommand(commands.DefaultHelpCommand):
     async def send_bot_help(self, mapping):
-        help_text = "Available commands:\n"
-        help_text += "s!create - Create a new Secret Santa event\n"
-        help_text += "s!join - Join the Secret Santa event\n"
-        help_text += "s!setwishlist - Set your gift preferences\n"
-        help_text += "s!setaddress - Set your delivery address\n"
-        help_text += "s!myinfo - View your current wishlist and address\n"
-        help_text += "s!match - Get your Secret Santa match information again\n"
-        help_text += "s!participants - List all participants\n"
-        help_text += "s!message - Send a message to your Secret Santa partner\n"
-        help_text += "s!start - Start the Secret Santa event\n"
-        help_text += "s!cancel - Cancel the Secret Santa event\n"
-        help_text += "s!remind - Send reminders to participants with missing info\n"
-        help_text += "s!info - Display bot information\n"
-        help_text += "s!broadcast - Send a message to all participants (admin only)\n"
-        help_text += "s!remove - Remove a participant from the event (admin only)\n"
-        help_text += "s!ratelimit - Set rate limiting for commands (admin only)\n"
-        help_text += "s!logs - View recent log entries (admin only)\n"
-        
-        # Split into multiple messages if too long
-        if len(help_text) > 1900:
-            messages = [help_text[i:i+1900] for i in range(0, len(help_text), 1900)]
-            for msg in messages:
-                await self.get_destination().send(msg)
-        else:
-            await self.get_destination().send(help_text)
+        del mapping
+        entries = []
+        for command in sorted(self.context.bot.commands, key=lambda item: item.name):
+            if command.hidden:
+                continue
+            entries.append((command.name, command.short_doc))
+        await _send_chunks(self.get_destination(), format_help(entries, self.context.clean_prefix))
+
 
 class SecretSantaCog(commands.Cog):
     def __init__(self, bot, db_manager):
         self.bot = bot
-        self.db_manager = db_manager
-        # Rate limiting: {user_id: [timestamp1, timestamp2, ...]}
-        self.user_command_history = defaultdict(list)
-        self.rate_limit_enabled = True
-        self.rate_limit_commands = RATE_LIMIT_COMMANDS
-        self.rate_limit_window = RATE_LIMIT_WINDOW
+        self.service = EventService(db_manager)
+        self.rate_limiter = RateLimiter()
+        self.bot.add_view(ReplyView("gifter"))
+        self.bot.add_view(ReplyView("giftee"))
+        self.daily_reminders.start()
 
-    def _check_rate_limit(self, user_id: str) -> tuple[bool, int]:
-        """Check if user is rate limited. Returns (is_limited, seconds_remaining)"""
-        if not self.rate_limit_enabled:
-            return False, 0
-        
-        current_time = time.time()
-        # Clean old entries
-        self.user_command_history[user_id] = [
-            t for t in self.user_command_history[user_id] 
-            if current_time - t < self.rate_limit_window
-        ]
-        
-        # Check if over limit
-        if len(self.user_command_history[user_id]) >= self.rate_limit_commands:
-            oldest = min(self.user_command_history[user_id])
-            seconds_remaining = int(self.rate_limit_window - (current_time - oldest))
-            return True, max(1, seconds_remaining)
-        
-        # Record this command
-        self.user_command_history[user_id].append(current_time)
-        return False, 0
+    def cog_unload(self):
+        self.daily_reminders.cancel()
 
     async def cog_before_invoke(self, ctx):
-        """Called before every command - check rate limit"""
-        # Skip rate limit for admins/creators
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        if is_admin:
+        if _is_admin(ctx):
             return
-        
-        is_limited, seconds = self._check_rate_limit(str(ctx.author.id))
-        if is_limited:
-            await ctx.send(f"⏳ Slow down! You're sending commands too fast. Try again in {seconds} seconds.")
-            raise commands.CommandError("Rate limited")
-
-    async def _show_potential_matches(self, ctx, pairings) -> bool:
-        """Show potential matches to creator and get confirmation"""
-        match_msg = "🎄 **Potential Secret Santa Matches:**\n\n"
-        for pairing in pairings:
-            giver = self.bot.get_user(int(pairing['giver']))
-            receiver = self.bot.get_user(int(pairing['receiver']))
-            if giver and receiver:
-                match_msg += f"• {giver.name} → {receiver.name}\n"
-        
-        match_msg += "\nAre you happy with these matches? (yes/no)"
-        
-        try:
-            await ctx.author.send(match_msg)
-            if isinstance(ctx.channel, discord.TextChannel):
-                await ctx.send("📬 I've sent you the potential matches in a DM!")
-        except discord.Forbidden:
-            await ctx.send("❌ I couldn't send you a DM! Please check your privacy settings.")
-            return False
-
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.author.dm_channel and m.content.lower() in ['yes', 'no']
-
-        try:
-            response = await self.bot.wait_for('message', timeout=300.0, check=check)
-            return response.content.lower() == 'yes'
-        except asyncio.TimeoutError:
-            await ctx.author.send("❌ No response received within 5 minutes. Please run s!start again.")
-            return False
-
-    @commands.command(name='create')
-    async def create_secret_santa(self, ctx):
-        """Create a new Secret Santa event"""
-        if self.db_manager.is_event_active():
-            await ctx.send("❌ A Secret Santa event is already in progress! Cancel it first with `s!cancel`")
+        limited, seconds = self.rate_limiter.check(str(ctx.author.id), time.time())
+        if not limited:
             return
-        
-        # Add creator as first participant
-        self.db_manager.add_participant(str(ctx.author.id), ctx.author.name, is_creator=True)
-        log_event("CREATE", f"New Secret Santa event created by {ctx.author.name} in server {ctx.guild.id}")
-        
-        create_msg = (
-            f"🎄 {ctx.author.name} has started a Secret Santa event! 🎅\n\n"
-            "To join the Secret Santa:\n"
-            "1. Use `s!join` in this channel or DM the bot\n"
-            "2. You'll receive instructions to set your wishlist and address\n\n"
-            "Once everyone has joined and set their preferences, use `s!start` to begin!"
-        )
-        await ctx.send(create_msg)
+        await _say(ctx, f"Slow down. Try again in {seconds} seconds.")
+        raise RateLimited()
 
-    @commands.command(name='join')
-    async def join_secret_santa(self, ctx):
-        """Join the Secret Santa event"""
-        # Check if there's an active event
-        if not self.db_manager.is_event_active():
-            await ctx.send("❌ There is no active Secret Santa event! Ask an admin to create one with `s!create`")
-            return
-            
-        user_id = str(ctx.author.id)
-        name = ctx.author.name
-        self.db_manager.add_participant(user_id, name)
-        log_event("JOIN", f"{name} joined the Secret Santa event")
-        await ctx.send(f"{name}, you've joined the Secret Santa!")
-        
-        # Send DM with instructions
-        welcome_msg = (
-            "Welcome to Secret Santa! 🎅\n\n"
-            "Please set up your preferences:\n"
-            "1. Set your wishlist with `s!setwishlist <your wishlist>`\n"
-            "2. Set your address with `s!setaddress <your address>`\n\n"
-            "Both are required before the event can start!"
-        )
-        await ctx.author.send(welcome_msg)
+    async def run(self, func, *args, **kwargs):
+        return await asyncio.to_thread(func, *args, **kwargs)
 
-    @commands.command(name='start')
-    async def start_secret_santa(self, ctx):
-        """Start the Secret Santa event and assign partners"""
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can start the Secret Santa!")
-            return
-            
-        participants = self.db_manager.get_all_participants()
-        if len(participants) < 2:
-            await ctx.send("At least two participants are required.")
-            return
-        
-        # Check for missing information
-        missing_info = self.db_manager.check_missing_info()
-        if missing_info:
-            await ctx.send("Cannot start - some users haven't set their preferences!")
-            
-            # DM users with missing information
-            for user in missing_info:
-                member = self.bot.get_user(int(user['user_id']))
-                if member:
-                    missing_items = []
-                    if user['missing_wishlist']:
-                        missing_items.append("wishlist (use s!setwishlist)")
-                    if user['missing_address']:
-                        missing_items.append("address (use s!setaddress)")
-                    
-                    missing_msg = (
-                        "⚠️ The Secret Santa event cannot start because you haven't set your:\n"
-                        f"{', '.join(missing_items)}\n"
-                        "Please set these to allow the event to start!"
-                    )
-                    await member.send(missing_msg)
-            return
-
-        # Keep generating matches until creator approves
-        matches_approved = False
-        while not matches_approved:
-            pairings = self.db_manager.assign_partners(participants)
-            matches_approved = await self._show_potential_matches(ctx, pairings)
-            if not matches_approved:
-                await ctx.author.send("🔄 Generating new matches...")
-
-        # Send out match notifications
-        for pairing in pairings:
-            giver = self.bot.get_user(int(pairing['giver']))
-            receiver = self.bot.get_user(int(pairing['receiver']))
-            
-            if giver and receiver:
+    @tasks.loop(hours=24)
+    async def daily_reminders(self):
+        today = date.today()
+        targets = await self.run(self.service.select_reminders, today)
+        marked: set[tuple[int, str]] = set()
+        for target in targets:
+            user = await self._user(target["user_id"])
+            if user is not None:
                 try:
-                    await self._send_match_notification(
-                        giver, 
-                        receiver, 
-                        pairing['receiver_wishlist'],
-                        pairing['receiver_address']
-                    )
+                    if target["kind"] == "profile":
+                        missing = ", ".join(target["missing"])
+                        await user.send(
+                            "Secret Santa still needs your "
+                            f"{missing}. Use /profile, s!setwishlist, or s!setaddress."
+                        )
+                    else:
+                        await user.send(
+                            "Your Secret Santa gift is not marked shipped yet. "
+                            f"The deadline is {target['deadline'].isoformat()}."
+                        )
                 except discord.Forbidden:
-                    await ctx.send(f"❌ Couldn't send match notification to {giver.name}. Please check DM permissions.")
-        
-        log_event("START", f"Secret Santa started by {ctx.author.name} in server {ctx.guild.id}")
-        await ctx.send("🎅 Secret Santa has begun! All participants have received their matches via DM!")
+                    pass
+            marked.add((target["event_id"], target["kind"]))
+        for event_id, kind in marked:
+            await self.run(self.service.mark_reminded, event_id, kind, today)
 
-    @commands.command(name='cancel')
-    async def cancel_secret_santa(self, ctx):
-        """Cancel the Secret Santa event"""
-        if not self.db_manager.is_event_active():
-            await ctx.send("❌ There is no active Secret Santa event to cancel!")
-            return
-        
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can cancel the Secret Santa!")
-            return
-        
-        self.db_manager.cancel_secret_santa()
-        log_event("CANCEL", f"Secret Santa cancelled by {ctx.author.name} in server {ctx.guild.id}")
-        await ctx.send("🎄 Secret Santa event cancelled! Use `s!create` to start a new one.")
+    @daily_reminders.before_loop
+    async def _wait_for_bot(self):
+        await self.bot.wait_until_ready()
 
-    @commands.command(name='message')
-    async def send_anonymous_message(self, ctx, recipient_type: str, *, message: str):
-        """Send an anonymous message to your Secret Santa partner"""
-        if not self.db_manager.is_event_active():
-            await ctx.send("❌ There is no active Secret Santa event!")
-            return
-            
-        if len(message) > 1000:
-            await ctx.send("❌ Message too long! Please keep it under 1000 characters.")
-            return
-            
-        user_id = str(ctx.author.id)
-        
-        if recipient_type.lower() == 'gifter':
-            # Get the user's gifter (person giving them a gift)
-            gifter_id = self.db_manager.get_gifter_for_user(user_id)
-            if not gifter_id:
-                await ctx.send("❌ You don't have a Secret Santa assigned yet!")
-                return
-                
-            gifter = self.bot.get_user(int(gifter_id))
-            if gifter:
-                formatted_msg = await self._format_message_notification(message, False)
-                success = await self._send_dm_with_log(
-                    gifter, 
-                    formatted_msg,
-                    f"Giftee({ctx.author.name})", 
-                    "TO_GIFTER"
-                )
-                if success:
-                    await ctx.send("✉️ Message sent to your Secret Santa!")
-                else:
-                    await ctx.send("❌ Couldn't send message - your Secret Santa has DMs disabled")
-            
-        elif recipient_type.lower() == 'giftee':
-            # Get the user's giftee (person they're giving a gift to)
-            giftee_id = self.db_manager.get_giftee_for_user(user_id)
-            if not giftee_id:
-                await ctx.send("❌ You don't have a gift recipient assigned yet!")
-                return
-                
-            giftee = self.bot.get_user(int(giftee_id))
-            if giftee:
-                formatted_msg = await self._format_message_notification(message, True)
-                success = await self._send_dm_with_log(
-                    giftee, 
-                    formatted_msg,
-                    f"Gifter({ctx.author.name})", 
-                    "TO_GIFTEE"
-                )
-                if success:
-                    await ctx.send("✉️ Message sent to your giftee!")
-                else:
-                    await ctx.send("❌ Couldn't send message - your giftee has DMs disabled")
-        else:
-            await ctx.send("❌ Invalid recipient! Use `gifter` to message your Secret Santa or `giftee` to message your recipient.")
+    @commands.hybrid_command(name="create", help="Create a Secret Santa event in this server")
+    @commands.guild_only()
+    async def create(self, ctx, *, name: str = "Secret Santa"):
+        """Create a Secret Santa event in this server."""
+        result = await self.run(self.service.create_event, str(ctx.guild.id), str(ctx.author.id), name)
+        if result.ok:
+            log_event("CREATE", f"guild {ctx.guild.id} organizer {ctx.author.id} event {result.data['event_id']}")
+        await _say(ctx, result.message)
 
-    @commands.command(name='setwishlist')
-    async def set_wishlist(self, ctx, *, wishlist):
-        """Set your wishlist"""
-        if len(wishlist) > 1000:
-            await ctx.send("❌ Wishlist is too long! Please keep it under 1000 characters.\nTip: Consider using bullet points for better organization.")
-            return
-            
-        user_id = str(ctx.author.id)
-        try:
-            self.db_manager.set_wishlist(user_id, wishlist)
-            log_event("WISHLIST", f"{ctx.author.name} set their wishlist")
-            await ctx.send("✅ Wishlist set successfully!")
-            
-            # Check if this completes their required info
-            missing_info = self.db_manager.check_missing_info()
-            user_missing = next((user for user in missing_info if user['user_id'] == user_id), None)
-            if user_missing:
-                if user_missing['missing_address']:
-                    await ctx.send("️ Don't forget to set your address using `s!setaddress`!")
-            else:
-                await ctx.send("🎄 Great! You've completed all required information!")
-        except Exception as e:
-            await ctx.send("❌ Error setting wishlist. Please try again with a shorter wishlist.")
-            print(f"Error setting wishlist: {e}")
-
-    @commands.command(name='setaddress')
-    async def set_address(self, ctx, *, address):
-        """Set your address for gift delivery"""
-        if len(address) > 1000:
-            await ctx.send("❌ Address is too long! Please keep it under 1000 characters.\nTip: Only include essential delivery information.")
-            return
-            
-        user_id = str(ctx.author.id)
-        try:
-            self.db_manager.set_address(user_id, address)
-            log_event("ADDRESS", f"{ctx.author.name} set their address")
-            await ctx.send("✅ Address set successfully! (Only your Secret Santa will see this)")
-            
-            # Check if this completes their required info
-            missing_info = self.db_manager.check_missing_info()
-            user_missing = next((user for user in missing_info if user['user_id'] == user_id), None)
-            if user_missing:
-                if user_missing['missing_wishlist']:
-                    await ctx.send("ℹ️ Don't forget to set your wishlist using `s!setwishlist`!")
-            else:
-                await ctx.send("🎄 Great! You've completed all required information!")
-        except Exception as e:
-            await ctx.send("❌ Error setting address. Please try again with a shorter address.")
-            print(f"Error setting address: {e}")
-
-    @commands.command(name='myinfo')
-    async def view_my_info(self, ctx):
-        """View your current Secret Santa information"""
-        user_id = str(ctx.author.id)
-        
-        # Get user's current info from database
-        self.db_manager._safe_execute("""
-            SELECT wishlist, address
-            FROM participants
-            WHERE user_id = %s
-        """, (user_id,))
-        result = self.db_manager.cursor.fetchone()
-        
-        if not result:
-            await ctx.send("❌ You haven't joined the Secret Santa yet! Use `s!join` to participate.")
-            return
-            
-        wishlist, address = result
-        
-        # Create info message
-        info_msg = (
-            "🎄 **Your Secret Santa Information:**\n\n"
-            f"**Wishlist:** {wishlist or 'Not set yet - use s!setwishlist'}\n"
-            f"**Address:** {address or 'Not set yet - use s!setaddress'}\n\n"
-            "Remember: Both wishlist and address are required before the event can start!"
-        )
-        
-        # Send as DM
-        try:
-            await ctx.author.send(info_msg)
-            if isinstance(ctx.channel, discord.TextChannel):
-                await ctx.send("📬 I've sent your information in a DM!")
-        except discord.Forbidden:
-            await ctx.send("❌ I couldn't send you a DM! Please check your privacy settings.")
-
-    @commands.command(name='match')
-    async def get_match_info(self, ctx):
-        """Get your Secret Santa match information again"""
-        user_id = str(ctx.author.id)
-        
-        # Get receiver information
-        receiver_id = self.db_manager.get_giftee_for_user(user_id)
-        if not receiver_id:
-            await ctx.send("❌ You don't have a Secret Santa match yet! Wait for the event to start.")
-            return
-            
-        # Get receiver's details
-        self.db_manager._safe_execute("""
-            SELECT name, wishlist, address
-            FROM participants
-            WHERE user_id = %s
-        """, (receiver_id,))
-        result = self.db_manager.cursor.fetchone()
-        
-        if result:
-            name, wishlist, address = result
-            match_msg = (
-                f"🎄 Your Secret Santa match:\n\n"
-                f"**Recipient:** {name}\n"
-                f"**Wishlist:** {wishlist or 'No wishlist set'}\n"
-                f"**Delivery Address:** {address or 'No address set'}\n\n"
-                "You can message them anonymously using `s!message giftee <your message>`"
-            )
-            
-            # Send as DM
+    @commands.hybrid_command(name="join", help="Join the open Secret Santa")
+    @commands.guild_only()
+    async def join(self, ctx):
+        """Join the open Secret Santa."""
+        result = await self.run(self.service.join, str(ctx.guild.id), str(ctx.author.id), ctx.author.display_name)
+        if result.ok:
+            log_event("JOIN", f"guild {ctx.guild.id} user {ctx.author.id}")
             try:
-                await ctx.author.send(match_msg)
-                if isinstance(ctx.channel, discord.TextChannel):
-                    await ctx.send("📬 I've sent your match information in a DM!")
+                await ctx.author.send(
+                    "You joined Secret Santa.\n"
+                    "Set a wishlist with s!setwishlist or /profile.\n"
+                    "Set an address with s!setaddress, or choose a digital gift on /profile.\n"
+                    "Typed wishlists and addresses are deleted from server channels."
+                )
             except discord.Forbidden:
-                await ctx.send("❌ I couldn't send you a DM! Please check your privacy settings.")
-        else:
-            await ctx.send("❌ Error retrieving match information. Please contact an administrator.")
+                pass
+        await _say(ctx, result.message)
 
-    @commands.command(name='participants')
-    async def list_participants(self, ctx):
-        """List all participants in the Secret Santa event"""
-        if not self.db_manager.is_event_active():
-            await ctx.send("❌ There is no active Secret Santa event!")
-            return
-            
-        participants = self.db_manager.get_all_participants()
-        if not participants:
-            await ctx.send("No participants have joined yet!")
-            return
-            
-        participant_list = "🎄 **Current Participants:**\n"
-        for i, p in enumerate(participants, 1):
-            participant_list += f"{i}. {p['name']}\n"
-            
-        # Split message if too long
-        if len(participant_list) > 1900:
-            chunks = [participant_list[i:i+1900] for i in range(0, len(participant_list), 1900)]
-            for i, chunk in enumerate(chunks, 1):
-                await ctx.send(f"Page {i}/{len(chunks)}:\n{chunk}")
-        else:
-            await ctx.send(participant_list)
+    @commands.hybrid_command(name="leave", help="Leave the Secret Santa")
+    @commands.guild_only()
+    async def leave(self, ctx):
+        """Leave the Secret Santa."""
+        result = await self.run(self.service.leave, str(ctx.guild.id), str(ctx.author.id))
+        await self._after_roster_change(ctx, result, "LEAVE")
 
-    @commands.command(name='logs')
-    async def view_logs(self, ctx):
-        """Display last 10 lines from the log file (Admin/Creator only)"""
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can use this command!")
-            return
+    @commands.hybrid_command(name="lock", help="Close signup")
+    @commands.guild_only()
+    async def lock(self, ctx):
+        """Close signup."""
+        result = await self.run(self.service.lock, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
+        await _say(ctx, result.message)
 
+    @commands.hybrid_command(name="unlock", help="Open signup again")
+    @commands.guild_only()
+    async def unlock(self, ctx):
+        """Open signup again."""
+        result = await self.run(self.service.unlock, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
+        await _say(ctx, result.message)
+
+    @commands.hybrid_command(name="deadline", help="Set the gift deadline as YYYY-MM-DD")
+    @commands.guild_only()
+    async def deadline(self, ctx, day: str):
+        """Set the gift deadline as YYYY-MM-DD."""
+        result = await self.run(
+            self.service.set_deadline,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+            day,
+        )
+        await _say(ctx, result.message)
+
+    @commands.hybrid_command(name="start", help="Draw matches and DM them")
+    @commands.guild_only()
+    async def start(self, ctx):
+        """Draw matches and DM them."""
+        result = await self.run(self.service.start, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
+        if not result.ok:
+            await _say(ctx, result.message)
+            for person in (result.data or {}).get("missing", []):
+                await self._dm(
+                    person["user_id"],
+                    "The Secret Santa draw is waiting on your " + ", ".join(person["missing"]) + ".",
+                )
+            return
+        failed = 0
+        for note in result.data["notifications"]:
+            if not await self._dm_assignment(note):
+                failed += 1
+        log_event("START", f"guild {ctx.guild.id} user {ctx.author.id}")
+        message = result.message
+        if failed:
+            message += f" {failed} participant(s) could not be reached by DM."
+        await _say(ctx, message)
+
+    @commands.hybrid_command(name="finish", help="Archive the event so a new one can be created")
+    @commands.guild_only()
+    async def finish(self, ctx):
+        """Archive the event so a new one can be created."""
+        result = await self.run(self.service.finish, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
+        await _say(ctx, result.message)
+
+    @commands.hybrid_command(name="cancel", help="Delete the open event in this server")
+    @commands.guild_only()
+    async def cancel(self, ctx):
+        """Delete the open event in this server."""
+        result = await self.run(self.service.cancel, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
+        if result.ok:
+            log_event("CANCEL", f"guild {ctx.guild.id} user {ctx.author.id}")
+        await _say(ctx, result.message)
+
+    @commands.hybrid_command(name="status", help="Show the event phase and who is missing a profile")
+    @commands.guild_only()
+    async def status(self, ctx):
+        """Show the event phase and who is missing a profile."""
+        result = await self.run(self.service.status, str(ctx.guild.id))
+        await _say(ctx, result.message)
+
+    @commands.hybrid_command(name="participants", help="List participants")
+    @commands.guild_only()
+    async def participants(self, ctx):
+        """List participants."""
+        result = await self.run(self.service.roster, str(ctx.guild.id))
+        await _say(ctx, result.message)
+
+    @commands.hybrid_command(name="exclude", help="Keep two participants from being assigned")
+    @commands.guild_only()
+    async def exclude(self, ctx, member: discord.Member):
+        """Keep two participants from being assigned."""
+        result = await self.run(self.service.exclude, str(ctx.guild.id), str(ctx.author.id), str(member.id))
+        await _say(ctx, result.message)
+
+    @commands.hybrid_command(name="unexclude", help="Remove an exclusion")
+    @commands.guild_only()
+    async def unexclude(self, ctx, member: discord.Member):
+        """Remove an exclusion."""
+        result = await self.run(self.service.unexclude, str(ctx.guild.id), str(ctx.author.id), str(member.id))
+        await _say(ctx, result.message)
+
+    @commands.hybrid_command(name="remove", help="Remove a participant")
+    @commands.guild_only()
+    async def remove(self, ctx, member: discord.Member):
+        """Remove a participant."""
+        result = await self.run(
+            self.service.remove,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            str(member.id),
+            _is_admin(ctx),
+        )
+        if result.ok:
+            await self._dm(
+                str(member.id),
+                "You were removed from the Secret Santa by the organizer.",
+            )
+        await self._after_roster_change(ctx, result, "REMOVE")
+
+    @commands.hybrid_command(name="profile", help="Open the private profile form")
+    async def profile(self, ctx):
+        """Open the private profile form."""
+        event = await self._personal_event(ctx)
+        if event is None:
+            return
+        info = await self.run(self.service.my_info, event["guild_id"], str(ctx.author.id))
+        if not info.ok:
+            await _say(ctx, info.message)
+            return
+        view = ProfileView(
+            self,
+            event["guild_id"],
+            str(ctx.author.id),
+            bool((info.data or {}).get("digital_only")),
+        )
+        await _say(
+            ctx,
+            "Update your profile with these buttons. The address stays in the form.",
+            view=view,
+            ephemeral=ctx.interaction is not None,
+        )
+
+    @commands.hybrid_command(name="setwishlist", help="Set your wishlist")
+    async def setwishlist(self, ctx, *, wishlist: str):
+        """Set your wishlist."""
+        await self._set_field(ctx, "wishlist", wishlist)
+
+    @commands.hybrid_command(name="setaddress", help="Set your shipping address")
+    async def setaddress(self, ctx, *, address: str):
+        """Set your shipping address."""
+        await self._set_field(ctx, "address", address)
+
+    @commands.hybrid_command(name="myinfo", help="DM your profile")
+    async def myinfo(self, ctx):
+        """DM your profile."""
+        event = await self._personal_event(ctx)
+        if event is None:
+            return
+        result = await self.run(self.service.my_info, event["guild_id"], str(ctx.author.id))
+        if not result.ok:
+            await _say(ctx, result.message)
+            return
+        await self._private(ctx, result.message)
+
+    @commands.hybrid_command(name="match", help="DM your match again")
+    async def match(self, ctx):
+        """DM your match again."""
+        await self._send_match(ctx)
+
+    @commands.hybrid_command(name="partnerinfo", help="DM your match again")
+    async def partnerinfo(self, ctx):
+        """DM your match again."""
+        await self._send_match(ctx)
+
+    @commands.hybrid_command(name="message", help="Send an anonymous message to gifter or giftee")
+    async def message(self, ctx, recipient_type: str, *, text: str):
+        """Send an anonymous message to gifter or giftee."""
+        await _delete_invocation(ctx)
+        await self._send_anonymous(ctx.author, ctx.guild, recipient_type, text, _say_ctx(ctx))
+
+    @commands.hybrid_command(name="gift", help="Update gift progress: bought, shipped, or received")
+    async def gift(self, ctx, status: str):
+        """Update gift progress: bought, shipped, or received."""
+        event = await self._personal_event(ctx)
+        if event is None:
+            return
+        result = await self.run(self.service.set_gift_status, event["guild_id"], str(ctx.author.id), status)
+        await _say(ctx, result.message)
+
+    @commands.hybrid_command(name="remind", help="DM participants who still need a profile")
+    @commands.guild_only()
+    async def remind(self, ctx):
+        """DM participants who still need a profile."""
+        result = await self.run(
+            self.service.missing_profile_targets,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+        )
+        if not result.ok or not (result.data or {}).get("users"):
+            await _say(ctx, result.message)
+            return
+        sent = 0
+        for person in result.data["users"]:
+            if await self._dm(
+                person["user_id"],
+                "Secret Santa still needs your " + ", ".join(person["missing"]) + ".",
+            ):
+                sent += 1
+        log_event("REMIND", f"guild {ctx.guild.id} user {ctx.author.id} count {sent}")
+        await _say(ctx, f"Sent reminders to {sent} participant(s).")
+
+    @commands.hybrid_command(name="broadcast", help="DM every participant")
+    @commands.guild_only()
+    async def broadcast(self, ctx, *, text: str):
+        """DM every participant."""
+        if len(text) > 1900:
+            await _say(ctx, "Keep the announcement under 1900 characters.")
+            return
+        result = await self.run(
+            self.service.broadcast_recipients,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+        )
+        if not result.ok:
+            await _say(ctx, result.message)
+            return
+        sent = 0
+        failed = 0
+        body = f"Announcement from the Secret Santa organizer:\n\n{text}"
+        for user_id in result.data["user_ids"]:
+            if await self._dm(user_id, body):
+                sent += 1
+            else:
+                failed += 1
+        log_event("BROADCAST", f"guild {ctx.guild.id} user {ctx.author.id} sent {sent} failed {failed}")
+        await _say(ctx, f"Sent the announcement to {sent} participant(s). {failed} could not be reached.")
+
+    @commands.hybrid_command(name="info", help="How this bot runs an event")
+    async def info(self, ctx):
+        """How this bot runs an event."""
+        await _say(ctx, INFO_TEXT)
+
+    @commands.hybrid_command(name="logs", help="DM the latest log lines")
+    @commands.guild_only()
+    async def logs(self, ctx):
+        """DM the latest log lines."""
+        event = await self.run(self.service.open_event, str(ctx.guild.id))
+        organizer_id = event["organizer_id"] if event else None
+        if not _is_admin(ctx) and str(ctx.author.id) != organizer_id:
+            await _say(ctx, "Only the organizer or a server admin can read the log.")
+            return
         try:
-            with open('secret_santa.log', 'r') as log_file:
-                # Get last 10 lines
-                lines = log_file.readlines()
-                last_logs = lines[-10:] if len(lines) >= 10 else lines
-                
-                log_text = "📋 **Last Log Entries:**\n\n"
-                log_text += ''.join(last_logs)
-                
-                # Send logs via DM
-                try:
-                    await ctx.author.send(log_text)
-                    await ctx.send("📬 Debug information has been sent to your DMs!")
-                except discord.Forbidden:
-                    await ctx.send("❌ Couldn't send DM. Please check your privacy settings.")
-                    
+            with open("secret_santa.log", "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
         except FileNotFoundError:
-            await ctx.send("❌ Log file not found!")
-        except Exception as e:
-            await ctx.send(f"❌ Error reading logs: {str(e)}")
+            await _say(ctx, "No log file yet.")
+            return
+        tail = "".join(lines[-10:]) or "The log is empty."
+        await self._private(ctx, f"Latest log lines:\n{tail}")
 
-    @commands.command(name='remind')
-    async def remind_missing_info(self, ctx):
-        """Send reminders to participants with missing information"""
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can send reminders!")
+    @commands.hybrid_command(name="ratelimit", help="Show or change command rate limits")
+    @commands.guild_only()
+    async def ratelimit(self, ctx, action: str, value: int | None = None):
+        """Show or change command rate limits."""
+        event = await self.run(self.service.open_event, str(ctx.guild.id))
+        organizer_id = event["organizer_id"] if event else None
+        if not _is_admin(ctx) and str(ctx.author.id) != organizer_id:
+            await _say(ctx, "Only the organizer or a server admin can change rate limits.")
             return
-            
-        missing_info = self.db_manager.check_missing_info()
-        if not missing_info:
-            await ctx.send("✅ All participants have completed their information!")
-            return
-            
-        reminder_sent = 0
-        for user in missing_info:
-            member = self.bot.get_user(int(user['user_id']))
-            if member:
-                missing_items = []
-                if user['missing_wishlist']:
-                    missing_items.append("wishlist (use s!setwishlist)")
-                if user['missing_address']:
-                    missing_items.append("address (use s!setaddress)")
-                
-                missing_msg = (
-                    "⚠️ The Secret Santa event cannot start because you haven't set your:\n"
-                    f"{', '.join(missing_items)}\n"
-                    "Please set these to allow the event to start!"
-                )
-                await member.send(missing_msg)
-                reminder_sent += 1
-        
-        await ctx.send(f"📬 Sent reminders to {reminder_sent} participant(s) with missing information.")
-        log_event("REMIND", f"Reminders sent by {ctx.author.name} to {reminder_sent} participants")
-
-    @commands.command(name='broadcast')
-    async def broadcast_message(self, ctx, *, message: str):
-        """Send a message to all participants (Admin/Creator only)"""
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can broadcast messages!")
-            return
-            
-        if len(message) > 1900:
-            await ctx.send("❌ Message too long! Please keep it under 1900 characters.")
-            return
-            
-        participants = self.db_manager.get_all_participants()
-        if not participants:
-            await ctx.send("❌ No participants to send messages to!")
-            return
-            
-        broadcast_msg = (
-            "📢 **Announcement from Secret Santa Admin:**\n\n"
-            f"{message}"
-        )
-        
-        success_count = 0
-        failed_count = 0
-        
-        for participant in participants:
-            member = self.bot.get_user(int(participant['user_id']))
-            if member:
-                try:
-                    await member.send(broadcast_msg)
-                    success_count += 1
-                    await self._log_message_sent(
-                        ctx.author.name,
-                        member.name,
-                        "BROADCAST",
-                        True
-                    )
-                except discord.Forbidden:
-                    failed_count += 1
-                    await self._log_message_sent(
-                        ctx.author.name,
-                        member.name,
-                        "BROADCAST",
-                        False
-                    )
-        
-        status_msg = (
-            f"📬 Broadcast sent to {success_count} participant(s)\n"
-            f"❌ Failed to send to {failed_count} participant(s)"
-        )
-        await ctx.send(status_msg)
-        log_event("BROADCAST", f"Message broadcast by {ctx.author.name} to {success_count} participants")
-
-    @commands.command(name='remove')
-    async def remove_participant(self, ctx, *, user_identifier: str):
-        """Remove a participant from the Secret Santa event (Admin/Creator only)"""
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can remove participants!")
-            return
-        
-        if not self.db_manager.is_event_active():
-            await ctx.send("❌ There is no active Secret Santa event!")
-            return
-        
-        # Try to find user by mention, ID, or name
-        target_user_id = None
-        target_name = None
-        
-        # Check if it's a mention
-        if ctx.message.mentions:
-            target_user = ctx.message.mentions[0]
-            target_user_id = str(target_user.id)
-            target_name = target_user.name
-        # Check if it's a user ID
-        elif user_identifier.isdigit():
-            target_user_id = user_identifier
-            user = self.bot.get_user(int(user_identifier))
-            target_name = user.name if user else f"User {user_identifier}"
-        # Try to find by name
-        else:
-            participant = self.db_manager.get_participant_by_name(user_identifier)
-            if participant:
-                target_user_id = participant['user_id']
-                target_name = participant['name']
-            else:
-                await ctx.send(f"❌ Could not find participant matching '{user_identifier}'")
-                return
-        
-        # Check if trying to remove the creator
-        if self.db_manager.is_creator_or_admin(target_user_id):
-            await ctx.send("❌ Cannot remove the event creator! Use `s!cancel` to cancel the entire event instead.")
-            return
-        
-        # Remove the participant
-        success = self.db_manager.remove_participant(target_user_id)
-        
-        if success:
-            log_event("REMOVE", f"{target_name} was removed from Secret Santa by {ctx.author.name}")
-            await ctx.send(f"✅ {target_name} has been removed from the Secret Santa event.")
-            
-            # Try to notify the removed user
-            try:
-                removed_user = self.bot.get_user(int(target_user_id))
-                if removed_user:
-                    await removed_user.send(
-                        "ℹ️ You have been removed from the Secret Santa event by an administrator.\n"
-                        "If you believe this was a mistake, please contact the event organizer."
-                    )
-            except discord.Forbidden:
-                pass  # Can't DM the user, that's okay
-        else:
-            await ctx.send(f"❌ {target_name} is not a participant in the Secret Santa event.")
-
-    @commands.command(name='ratelimit')
-    async def set_rate_limit(self, ctx, action: str, value: int = None):
-        """Configure rate limiting for bot commands (Admin/Creator only)
-        
-        Usage:
-        s!ratelimit on - Enable rate limiting
-        s!ratelimit off - Disable rate limiting
-        s!ratelimit commands 10 - Set max commands per window
-        s!ratelimit window 60 - Set window duration in seconds
-        s!ratelimit status - Show current settings
-        """
-        # Check if user is admin or creator
-        is_admin = isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator
-        is_creator = self.db_manager.is_creator_or_admin(str(ctx.author.id))
-        
-        if not (is_admin or is_creator):
-            await ctx.send("❌ Only the event creator or server administrators can configure rate limiting!")
-            return
-        
         action = action.lower()
-        
-        if action == 'on':
-            self.rate_limit_enabled = True
-            await ctx.send("✅ Rate limiting enabled!")
-            log_event("RATELIMIT", f"Rate limiting enabled by {ctx.author.name}")
-            
-        elif action == 'off':
-            self.rate_limit_enabled = False
-            await ctx.send("✅ Rate limiting disabled!")
-            log_event("RATELIMIT", f"Rate limiting disabled by {ctx.author.name}")
-            
-        elif action == 'commands':
+        limiter = self.rate_limiter
+        if action == "on":
+            limiter.enabled = True
+            text = "Rate limiting is on."
+        elif action == "off":
+            limiter.enabled = False
+            text = "Rate limiting is off."
+        elif action == "commands":
             if value is None or value < 1:
-                await ctx.send("❌ Please provide a valid number of commands (minimum 1)")
-                return
-            self.rate_limit_commands = value
-            await ctx.send(f"✅ Rate limit set to {value} commands per {self.rate_limit_window} seconds")
-            log_event("RATELIMIT", f"Rate limit commands set to {value} by {ctx.author.name}")
-            
-        elif action == 'window':
+                text = "Provide a command limit of at least 1."
+            else:
+                limiter.max_commands = value
+                text = f"The limit is {value} commands every {limiter.window} seconds."
+        elif action == "window":
             if value is None or value < 5:
-                await ctx.send("❌ Please provide a valid window duration (minimum 5 seconds)")
+                text = "Provide a window of at least 5 seconds."
+            else:
+                limiter.window = value
+                text = f"The window is {value} seconds."
+        elif action == "status":
+            state = "on" if limiter.enabled else "off"
+            text = (
+                f"Rate limiting is {state}. "
+                f"{limiter.max_commands} commands every {limiter.window} seconds."
+            )
+        else:
+            text = "Use on, off, commands, window, or status."
+        log_event("RATELIMIT", f"guild {ctx.guild.id} user {ctx.author.id} action {action}")
+        await _say(ctx, text)
+
+    @commands.hybrid_command(name="reveal", help="DM the organizer the full draw")
+    @commands.guild_only()
+    async def reveal(self, ctx, confirmation: str = ""):
+        """DM the organizer the full draw."""
+        token = confirmation.strip().lower()
+        if token != "reveal":
+            await _say(
+                ctx,
+                "This shows every match and breaks anonymity. "
+                "Reply reveal within a minute, or run s!reveal reveal.",
+            )
+            token = await self._wait_for_reveal(ctx)
+            if token != "reveal":
+                await _say(ctx, "Reveal cancelled.")
                 return
-            self.rate_limit_window = value
-            await ctx.send(f"✅ Rate limit window set to {value} seconds")
-            log_event("RATELIMIT", f"Rate limit window set to {value}s by {ctx.author.name}")
-            
-        elif action == 'status':
-            status = "enabled" if self.rate_limit_enabled else "disabled"
-            await ctx.send(
-                f"⚙️ **Rate Limit Settings:**\n"
-                f"Status: {status}\n"
-                f"Max commands: {self.rate_limit_commands}\n"
-                f"Window: {self.rate_limit_window} seconds\n\n"
-                f"Users can send {self.rate_limit_commands} commands every {self.rate_limit_window} seconds."
-            )
-        else:
-            await ctx.send(
-                "❌ Invalid action! Use:\n"
-                "`s!ratelimit on` - Enable rate limiting\n"
-                "`s!ratelimit off` - Disable rate limiting\n"
-                "`s!ratelimit commands <number>` - Set max commands\n"
-                "`s!ratelimit window <seconds>` - Set time window\n"
-                "`s!ratelimit status` - Show current settings"
-            )
-
-    async def _send_match_notification(self, giver, receiver, wishlist, address):
-        """Helper method to send match notification, handling long messages"""
-        intro_msg = (
-            f"🎄 Your Secret Santa match:\n\n"
-            f"**Recipient:** {receiver.name}\n"
+        result = await self.run(
+            self.service.reveal,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+            token,
         )
-        await giver.send(intro_msg)
-
-        # Send wishlist (potentially split)
-        wishlist_msg = f"**Wishlist:**\n{wishlist or 'No wishlist set'}"
-        if len(wishlist_msg) > 1900:
-            chunks = [wishlist_msg[i:i+1900] for i in range(0, len(wishlist_msg), 1900)]
-            for i, chunk in enumerate(chunks, 1):
-                await giver.send(f"Wishlist (Part {i}/{len(chunks)}):\n{chunk}")
-        else:
-            await giver.send(wishlist_msg)
-
-        # Send address (potentially split)
-        address_msg = f"**Delivery Address:**\n{address or 'No address set'}"
-        if len(address_msg) > 1900:
-            chunks = [address_msg[i:i+1900] for i in range(0, len(address_msg), 1900)]
-            for i, chunk in enumerate(chunks, 1):
-                await giver.send(f"Address (Part {i}/{len(chunks)}):\n{chunk}")
-        else:
-            await giver.send(address_msg)
-
-        # Send final instructions
-        await giver.send("You can message them anonymously using `s!message giftee <your message>`")
-
-    async def _format_message_notification(self, message: str, is_from_gifter: bool) -> str:
-        """Format message notification with helpful reply instructions"""
-        prefix = "🎁 Your Secret Santa sent you a message:" if is_from_gifter else "🎄 Your giftee sent you a message:"
-        reply_cmd = "s!message gifter" if is_from_gifter else "s!message giftee"
-        
-        return (
-            f"{prefix}\n\n"
-            f"{message}\n\n"
-            f"To reply, use: `{reply_cmd} <your message>`"
-        )
-
-    async def _log_message_sent(self, sender: str, recipient: str, message_type: str, success: bool):
-        """Log message sending attempts and results"""
-        status = "✅" if success else "❌"
-        log_event("MESSAGE", 
-            f"{status} {message_type} message: {sender} → {recipient}")
-
-    async def _send_dm_with_log(self, user: discord.User, message: str, 
-                              sender_name: str, message_type: str) -> bool:
-        """Send DM and log the attempt"""
+        if not result.ok:
+            await _say(ctx, result.message)
+            return
+        log_event("REVEAL", f"event {result.data['event_id']} by {ctx.author.id}")
         try:
-            await user.send(message)
-            await self._log_message_sent(sender_name, user.name, message_type, True)
+            await _send_chunks(ctx.author, result.data["dm_text"])
+        except discord.Forbidden:
+            await _say(ctx, "I couldn't DM you the draw. Allow DMs from server members.")
+            return
+        await _say(ctx, result.message)
+
+    async def deliver_anonymous(self, interaction: discord.Interaction, direction: str, text: str):
+        async def respond(content: str):
+            if interaction.response.is_done():
+                await interaction.followup.send(content, ephemeral=True)
+            else:
+                await interaction.response.send_message(content, ephemeral=True)
+
+        await self._send_anonymous(interaction.user, interaction.guild, direction, text, respond)
+
+    async def notify_wishlist(self, payload: dict):
+        wishlist = payload.get("wishlist") or "Their wishlist is now empty."
+        await self._dm(payload["notify_gifter_id"], f"Your giftee updated their wishlist:\n{wishlist}")
+
+    async def _set_field(self, ctx, field_name: str, value: str):
+        await _delete_invocation(ctx)
+        event = await self._personal_event(ctx)
+        if event is None:
+            return
+        result = await self.run(
+            self.service.set_text_field,
+            event["guild_id"],
+            str(ctx.author.id),
+            field_name,
+            value,
+            ctx.guild is not None,
+        )
+        if result.ok:
+            log_event(field_name.upper(), f"user {ctx.author.id}")
+        if result.data and result.data.get("notify_gifter_id"):
+            await self.notify_wishlist(result.data)
+        await self._private(ctx, result.message)
+
+    async def _send_match(self, ctx):
+        event = await self._personal_event(ctx)
+        if event is None:
+            return
+        result = await self.run(self.service.match_info, event["guild_id"], str(ctx.author.id))
+        if not result.ok:
+            await _say(ctx, result.message)
+            return
+        await self._private(ctx, result.message, reply_as="giftee")
+
+    async def _send_anonymous(self, user, guild, recipient_type: str, text: str, respond):
+        if guild is not None:
+            event = await self.run(self.service.open_event, str(guild.id))
+            if event is None:
+                await respond("There is no active Secret Santa event.")
+                return
+        else:
+            participations = await self.run(self.service.open_participations, str(user.id))
+            event = resolve_dm_events(participations)
+            if event is None:
+                if len(participations) > 1:
+                    await respond("You are in more than one Secret Santa. Run this command in the server.")
+                else:
+                    await respond("Run this command in the server where you joined.")
+                return
+        result = await self.run(
+            self.service.prepare_message,
+            event["guild_id"],
+            str(user.id),
+            recipient_type,
+            text,
+        )
+        if not result.ok:
+            await respond(result.message)
+            return
+        direction = result.data["direction"]
+        reply_as = result.data["reply_as"]
+        if direction == "giftee":
+            heading = "Your Secret Santa sent you a message:"
+        else:
+            heading = "Your giftee sent you a message:"
+        body = f"{heading}\n\n{result.data['body']}\n\nReply with the button or s!message {reply_as}."
+        delivered = await self._dm(result.data["target_id"], body, reply_as=reply_as)
+        log_event("MESSAGE", anonymous_message_log(delivered, direction))
+        if delivered:
+            await respond("The anonymous message was sent.")
+        else:
+            await respond("The message could not be delivered. Their DMs are closed.")
+
+    async def _after_roster_change(self, ctx, result, action: str):
+        for note in (result.data or {}).get("changed", []):
+            await self._dm_assignment(note)
+        if result.ok:
+            log_event(action, f"guild {ctx.guild.id} user {ctx.author.id}")
+        await _say(ctx, result.message)
+
+    async def _personal_event(self, ctx):
+        event = await self._event_for(str(ctx.author.id), ctx.guild)
+        if event is not None:
+            return event
+        if ctx.guild is not None:
+            await _say(ctx, "There is no active Secret Santa event.")
+            return None
+        participations = await self.run(self.service.open_participations, str(ctx.author.id))
+        if len(participations) > 1:
+            await _say(ctx, "You are in more than one Secret Santa. Run this command in the server.")
+        else:
+            await _say(ctx, "Run this command in the server where you joined.")
+        return None
+
+    async def _event_for(self, user_id: str, guild):
+        if guild is not None:
+            return await self.run(self.service.open_event, str(guild.id))
+        participations = await self.run(self.service.open_participations, user_id)
+        return resolve_dm_events(participations)
+
+    async def _dm_assignment(self, note: dict) -> bool:
+        return await self._dm(note["giver_id"], assignment_text(note), reply_as="giftee")
+
+    async def _dm(self, user_id: str, text: str, reply_as: str | None = None) -> bool:
+        user = await self._user(user_id)
+        if user is None:
+            return False
+        try:
+            await _send_chunks(user, text, reply_as=reply_as)
             return True
         except discord.Forbidden:
-            await self._log_message_sent(sender_name, user.name, message_type, False)
             return False
 
+    async def _private(self, ctx, text: str, reply_as: str | None = None):
+        if ctx.guild is None:
+            await _send_chunks(ctx, text, reply_as=reply_as)
+            return
+        try:
+            await _send_chunks(ctx.author, text, reply_as=reply_as)
+        except discord.Forbidden:
+            await _say(ctx, "I couldn't DM you. Allow DMs from server members.")
+            return
+        await _say(ctx, "I sent that in a DM.")
+
+    async def _user(self, user_id: str):
+        try:
+            snowflake = int(user_id)
+        except (TypeError, ValueError):
+            return None
+        user = self.bot.get_user(snowflake)
+        if user is not None:
+            return user
+        try:
+            return await self.bot.fetch_user(snowflake)
+        except (discord.NotFound, discord.HTTPException):
+            return None
+
+    async def _wait_for_reveal(self, ctx) -> str:
+        def check(message: discord.Message) -> bool:
+            return message.author == ctx.author and message.channel == ctx.channel
+
+        try:
+            reply = await self.bot.wait_for("message", timeout=60, check=check)
+        except asyncio.TimeoutError:
+            return ""
+        return reply.content.strip().lower()
+
+
 async def setup(bot):
-    await bot.add_cog(SecretSantaCog(bot))
-    print("SecretSanta cog loaded successfully!")
+    await bot.add_cog(SecretSantaCog(bot, bot.db_manager))
+
+
+def _is_admin(ctx) -> bool:
+    permissions = getattr(ctx.author, "guild_permissions", None)
+    return bool(permissions and permissions.administrator)
+
+
+async def _delete_invocation(ctx):
+    message = getattr(ctx, "message", None)
+    if ctx.guild is None or message is None:
+        return
+    try:
+        await message.delete()
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        pass
+
+
+async def _say(ctx, content: str, *, view=None, ephemeral: bool = False):
+    kwargs = {}
+    if view is not None:
+        kwargs["view"] = view
+    if ephemeral and ctx.interaction is not None:
+        kwargs["ephemeral"] = True
+    await _send_chunks(ctx, content, **kwargs)
+
+
+def _say_ctx(ctx):
+    async def respond(content: str):
+        await _say(ctx, content)
+
+    return respond
+
+
+async def _send_chunks(destination, content: str, *, reply_as: str | None = None, **kwargs):
+    if not content:
+        content = "Done."
+    chunks = [content[index:index + 1900] for index in range(0, len(content), 1900)]
+    for index, chunk in enumerate(chunks):
+        extra = dict(kwargs)
+        if reply_as and index == len(chunks) - 1:
+            extra["view"] = ReplyView(reply_as)
+        await destination.send(chunk, **extra)
