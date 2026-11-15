@@ -1,108 +1,123 @@
-# Secret Santa Discord Bot 🎅
+# Secret Santa Discord Bot
 
-A Discord bot to manage Secret Santa events in your server. Features anonymous messaging, wishlist management, and automated partner assignments.
+A Discord bot for one Secret Santa at a time in each server. It collects private wishlists and addresses, draws a derangement that respects exclusions, and lets pairs message each other without sharing names in the channel.
+
+Prefix commands use `s!`. The same actions are available as slash commands after the bot syncs them.
 
 ## Features
-- Create and manage Secret Santa events
-- Collect wishlists and delivery addresses
-- Randomly assign Secret Santa pairs
-- Anonymous messaging between gifters and recipients
-- Admin controls for event management
+
+- One open event per server, with signup, locked, drawn, and done phases
+- An organizer who runs the event and is not in the draw unless they join
+- Wishlists, do-not-gift notes, shirt size, notes, and an optional shipping address
+- Digital gifts that do not require an address
+- Mutual exclusions and a redraw when someone leaves after the draw
+- Anonymous messages with a Reply button
+- Gift progress: bought, shipped, received
+- Daily reminders for missing profiles and for gifts that are not shipped near the deadline
 
 ## Prerequisites
+
 - Python 3.10 or higher
-- pipx (for managing Poetry)
-- Poetry (for dependency management)
+- Poetry
+- PostgreSQL (`DATABASE_URL`)
 - A Discord bot token
 
 ## Installation
 
-1. Install pipx (if not already installed):
+1. Install Poetry if you do not already have it:
 
-```
+```bash
 pipx install poetry
 ```
 
-3. Clone the repository:
+2. Clone the repository and install dependencies:
 
 ```bash
 git clone <repository-url>
 cd secret_santa_bot
-```
-
-4. Install dependencies:
-
-```bash
 poetry install
 ```
 
-5. Create a `.env` file in the root directory:
+3. Create a `.env` file in `secret_santa_bot`:
 
 ```env
 DISCORD_TOKEN=your_discord_bot_token_here
+DATABASE_URL=postgresql://user:password@host:5432/secret_santa
 ```
 
 ## Running the Bot
 
-From the project directory:
+From `secret_santa_bot`:
 
 ```bash
 poetry run python src/bot.py
 ```
 
+The process listens on `0.0.0.0:8080`. `/` and `/health` return 200 when the database answers and 503 when it does not. The port opens before the schema migration so a deploy health check can pass while the old container releases its database lock.
+
 ## Commands
 
-### Event Management
-- `s!create` - Create a new Secret Santa event (admin only)
-- `s!start` - Start the Secret Santa event and assign partners (admin/creator only)
-- `s!cancel` - Cancel the Secret Santa event (admin/creator only)
-- `s!remind` - Send reminders to participants with missing information (admin/creator only)
+Server management (organizer or a server admin):
 
-### Participant Commands
-- `s!join` - Join the Secret Santa event
-- `s!setwishlist <wishlist>` - Set your gift preferences
-- `s!setaddress <address>` - Set your delivery address
-- `s!myinfo` - View your current wishlist and address (sent via DM)
-- `s!partnerinfo` - View your partner's gift preferences
-- `s!participants` - List all participants
+- `s!create [name]` - Create an event. The organizer is not enrolled.
+- `s!lock` / `s!unlock` - Close or reopen signup.
+- `s!deadline YYYY-MM-DD` - Set the shipping deadline.
+- `s!start` - Draw matches and DM them. No preview is sent.
+- `s!reveal reveal` - DM the organizer the full draw. This breaks anonymity.
+- `s!finish` - Archive a drawn event so another can be created.
+- `s!cancel` - Delete this server's open event.
+- `s!remove @member` - Remove someone. After the draw, the seat is redrawn.
+- `s!remind` - DM people who still need a wishlist or address.
+- `s!broadcast <message>` - DM every participant.
+- `s!logs` - DM the latest log lines.
+- `s!ratelimit on|off|commands <n>|window <seconds>|status`
 
-### Messaging
-- `s!message gifter <message>` - Send an anonymous message to your Secret Santa
-- `s!message giftee <message>` - Send an anonymous message to your recipient
+Participants:
 
-## Setting Up Your Own Bot
+- `s!join` / `s!leave`
+- `s!profile` - Private form for wishlist, notes, shirt size, address, and the digital-gift toggle.
+- `s!setwishlist <text>` / `s!setaddress <text>` - In a server channel, the command message is deleted.
+- `s!myinfo` - DM your profile.
+- `s!exclude @member` / `s!unexclude @member` - Keep two people from being assigned either way.
+- `s!match` and `s!partnerinfo` - DM your match again.
+- `s!message gifter <text>` / `s!message giftee <text>`
+- `s!gift bought|shipped|received`
+- `s!participants` / `s!status` / `s!info`
 
-1. Create a new Discord application at [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create a bot for your application
-3. Enable necessary intents (Message Content, Server Members)
-4. Copy your bot token and add it to the `.env` file
-5. Invite the bot to your server using the OAuth2 URL generator:
-   - Required permissions: Send Messages, Read Messages/View Channels
-   - Required scopes: bot, applications.commands
+`s!match`, `s!message`, `s!myinfo`, and `s!profile` work in a DM when you are in exactly one open event.
 
-## Event Flow
-1. Admin creates event with `s!create`
-2. Participants join with `s!join`
-3. Participants set wishlist and address
-4. Admin starts event with `s!start`
-5. Bot DMs everyone their Secret Santa assignment
-6. Participants can message anonymously using `s!message`
+## Event flow
 
-## Notes
-- Only one Secret Santa event can be active at a time
-- Both wishlist and address are required before the event can start
-- Server admins and the event creator can manage the event
-- All participant information is cleared when an event is cancelled
+1. An organizer creates the event with `s!create`.
+2. Participants join and fill in a wishlist. A shipping address is required unless the gift is digital.
+3. Optional: lock signup, set a deadline, and add exclusions.
+4. `s!start` writes a draw only when every profile is complete and a valid derangement exists.
+5. Each person is DMed their recipient. The organizer does not receive the full list.
+6. Pairs can message anonymously and mark the gift bought, shipped, and received.
+7. `s!finish` archives the event. `s!cancel` deletes the open event in that server only.
 
-## Troubleshooting
-- If the bot doesn't respond, check if it has proper permissions
-- If commands fail, ensure all required information is provided
-- For DM issues, make sure your Discord privacy settings allow DMs from server members
+## Tests
 
-## Contributing
-Dew it fools!
-
-## License
-[MIT License](LICENSE)
+```bash
+poetry run pytest
 ```
 
+Database tests use `TEST_DATABASE_URL` when it is set. Otherwise they start a temporary local Postgres cluster.
+
+## Setting up Discord
+
+1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Create a bot and copy the token into `.env`.
+3. Enable the Message Content and Server Members intents.
+4. Invite the bot with the `bot` and `applications.commands` scopes and permission to send and read messages.
+
+## Notes
+
+- Finished events stay in the database. Cancelling deletes only the open event in that server.
+- Anonymous message logs record the direction and whether delivery worked. They do not record display names.
+- A wishlist edited after the draw is sent to the giver.
+- Leaving after the draw fails, and changes nothing, when the remaining people cannot be redrawn.
+
+## License
+
+[MIT License](LICENSE)

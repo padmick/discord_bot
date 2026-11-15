@@ -1,18 +1,27 @@
 [tool.poetry]
 name = "secret-santa-bot"
 version = "0.1.0"
-description = ""
+description = "Discord bot for per-server Secret Santa events"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
+package-mode = false
 
 
 [tool.poetry.dependencies]
 python = "^3.10"
 "discord.py" = "^2.4.0"
 python-dotenv = "^1.0.1"
-psutil = "^6.1.0"
 psycopg2-binary = "^2.9.9"
+flask = "^2.3.0"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-asyncio = "^0.24.0"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
 
 [build-system]
 requires = ["poetry-core"]
