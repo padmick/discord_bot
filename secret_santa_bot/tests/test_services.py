@@ -505,3 +505,15 @@ def test_health_payload_reports_a_down_database():
     assert status == 200
     assert body["bot_ready"] is False
     assert body["status"] == "healthy"
+
+
+def test_root_and_health_share_the_database_status():
+    from bot import app, runtime
+
+    runtime["db"] = None
+    client = app.test_client()
+    for path in ("/", "/health"):
+        response = client.get(path)
+        assert response.status_code == 503
+        assert response.get_json()["status"] == "unhealthy"
+        assert response.get_json()["database"] is False

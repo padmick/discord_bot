@@ -93,6 +93,7 @@ async def on_app_command_error(interaction, error):
 app = Flask(__name__)
 
 
+@app.route("/")
 @app.route("/health")
 def health_check():
     """Health check for the process and the database."""
@@ -113,6 +114,10 @@ def start_health_server():
 def main():
     if not TOKEN:
         raise SystemExit("DISCORD_TOKEN is not set")
+    # App Platform replaces the old container once TCP port 8080 accepts
+    # connections. Open it before the schema migration so that migration can
+    # wait for the old container to release its database lock.
+    start_health_server()
     try:
         runtime["db"] = DatabaseManager()
     except Exception as exc:
@@ -120,7 +125,6 @@ def main():
         print("The bot will start without Secret Santa commands until the database is reachable.")
         runtime["db"] = None
     bot.db_manager = runtime["db"]
-    start_health_server()
     bot.run(TOKEN)
 
 

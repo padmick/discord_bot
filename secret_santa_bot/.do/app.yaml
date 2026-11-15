@@ -1,21 +1,38 @@
-name: secret-santa-bot
+# Mirror of the live App Platform app "coral-app" (lon).
+# Pushes to main deploy from the spec stored in DigitalOcean, not from this file.
+# Do not apply this file with doctl: DISCORD_TOKEN is already set on the app,
+# and this copy intentionally has no token value.
+name: coral-app
+region: lon
 services:
-- name: worker
+- name: discord-bot-secret-santa-bot
   github:
+    repo: padmick/discord_bot
     branch: main
-    repo: USERNAME/REPO_NAME # Update this or select in UI
     deploy_on_push: true
-  dockerfile_path: Dockerfile
-  health_check:
-    http_path: /health
+  dockerfile_path: secret_santa_bot/Dockerfile
+  source_dir: secret_santa_bot
+  http_port: 8080
+  instance_count: 1
+  instance_size_slug: apps-s-1vcpu-0.5gb
   envs:
   - key: DISCORD_TOKEN
     scope: RUN_TIME
-    value: "PLACEHOLDER_TOKEN"
+    type: SECRET
+  - key: SETUP_DATABASE
+    scope: RUN_AND_BUILD_TIME
+    value: "false"
   - key: DATABASE_URL
     scope: RUN_TIME
-    value: ${db.DATABASE_URL}
+    value: ${db-secret-santa.DATABASE_URL}
+ingress:
+  rules:
+  - component:
+      name: discord-bot-secret-santa-bot
+    match:
+      path:
+        prefix: /
 databases:
-- engine: PG
-  name: db
+- name: db-secret-santa
+  engine: PG
   version: "17"

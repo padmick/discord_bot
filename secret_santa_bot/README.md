@@ -53,7 +53,7 @@ From `secret_santa_bot`:
 poetry run python src/bot.py
 ```
 
-The process listens on port 8080 at `/health`. The check fails when the database cannot be reached.
+The process listens on `0.0.0.0:8080`. `/` and `/health` return 200 when the database answers and 503 when it does not. The port opens before the schema migration so a deploy health check can pass while the old container releases its database lock.
 
 ## Commands
 
