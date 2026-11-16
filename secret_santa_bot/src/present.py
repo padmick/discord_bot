@@ -17,11 +17,22 @@ PHASE_DETAIL = {
 HELP_GROUPS = (
     (
         "Getting started",
-        ("help", "info", "join", "leave", "profile", "setwishlist", "setaddress", "myinfo"),
+        (
+            "help",
+            "info",
+            "join",
+            "leave",
+            "profile",
+            "setwishlist",
+            "setaddress",
+            "myinfo",
+            "exclude",
+            "unexclude",
+        ),
     ),
     (
         "After the draw",
-        ("match", "partnerinfo", "message", "gift", "exclude", "unexclude"),
+        ("match", "partnerinfo", "message", "gift"),
     ),
     ("Event status", ("status", "participants")),
     (
@@ -124,7 +135,9 @@ def guide_fields() -> tuple[Field, ...]:
         ),
         Field(
             "If plans change",
-            "`s!exclude @someone` keeps the two of you from being paired in either direction. "
+            "On `/profile` in the server, the menu lets you skip someone you were paired with before, "
+            "even if they have not joined this year. `s!exclude @someone` does the same. "
+            "You will not be assigned to each other.\n"
             "`s!leave` drops you from the event. After the draw, leaving redraws the open seats "
             "and keeps every match it still can. If a redraw is impossible, nobody is removed.",
         ),
@@ -255,7 +268,17 @@ def profile_card(participant: dict) -> Card:
     )
 
 
-def profile_prompt_card() -> Card:
+def profile_prompt_card(in_guild: bool = True) -> Card:
+    if in_guild:
+        past_match = (
+            "Use the menu to choose people from this server you were paired with before. "
+            "They do not have to have joined yet. You will not be assigned to each other."
+        )
+    else:
+        past_match = (
+            "To skip someone from a past Secret Santa, run /profile in the server. "
+            "The menu there lists people in the server, including people who have not joined yet."
+        )
     return Card(
         title="Your profile",
         description="Use the buttons below. The form is private, so the address is not posted in the channel.",
@@ -264,6 +287,7 @@ def profile_prompt_card() -> Card:
                 "What the draw needs",
                 "A wishlist is required. An address is required unless the gift is digital.",
             ),
+            Field("Past matches", past_match),
         ),
         footer="s!myinfo sends the saved profile in a DM.",
     )

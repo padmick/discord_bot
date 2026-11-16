@@ -10,7 +10,7 @@ Prefix commands use `s!`. The same actions are available as slash commands after
 - An organizer who runs the event and is not in the draw unless they join
 - Wishlists, do-not-gift notes, notes, and an optional shipping address
 - Digital gifts that do not require an address
-- Mutual exclusions and a redraw when someone leaves after the draw
+- A past-match menu so you can skip someone you were paired with before, even if they have not joined yet, and a redraw when someone leaves after the draw
 - Anonymous messages with a Reply button
 - Gift progress: bought, shipped, received
 - Reminder settings the organizer edits in a form. The bot checks once a day and sends after the chosen number of days, weekly by default.
@@ -80,7 +80,7 @@ Participants:
 - `s!profile` - Private form for wishlist, notes, address, and the digital-gift toggle.
 - `s!setwishlist <text>` / `s!setaddress <text>` - In a server channel, the command message is deleted.
 - `s!myinfo` - DM your profile.
-- `s!exclude @member` / `s!unexclude @member` - Keep two people from being assigned either way.
+- `s!exclude @member` (also `s!skip`) / `s!unexclude @member` - Skip someone you were paired with before. They do not have to have joined. `/profile` in the server has the same menu.
 - `s!match` and `s!partnerinfo` - DM your match again.
 - `s!message gifter <text>` / `s!message giftee <text>`
 - `s!gift bought|shipped|received`
@@ -92,7 +92,7 @@ Participants:
 
 1. An organizer creates the event with `s!create`.
 2. Participants join, get a DM explaining the event, and fill in a wishlist. A shipping address is required unless the gift is digital.
-3. Optional: lock signup, set a deadline, add exclusions, and set reminder timing with `s!settings`.
+3. Optional: lock signup, set a deadline, skip past matches, and set reminder timing with `s!settings`.
 4. `s!start` writes a draw only when every profile is complete and a valid derangement exists.
 5. Each person is DMed their recipient. The organizer does not receive the full list.
 6. Pairs can message anonymously and mark the gift bought, shipped, and received.

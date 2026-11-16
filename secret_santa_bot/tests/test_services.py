@@ -586,6 +586,106 @@ async def test_notification_form_saves_the_organizer_choices():
     assert "organizer" in rejected.followup.messages[0].lower()
 
 
+def test_a_past_match_can_be_skipped_before_they_join():
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    assert svc.exclude("guild", "stranger", "bea", "Bea").code == "not_joined"
+    ready_participant(svc, "guild", "a", "Ada")
+    saved = svc.skip_past_matches(
+        "guild",
+        "a",
+        [("a", "Ada"), ("bea", "Bea"), ("cal", "Cal")],
+    )
+    assert saved.ok
+    assert "exclu" not in saved.message.lower()
+    assert "Bea" in saved.message and "Cal" in saved.message
+    assert "joined" in saved.message.lower()
+    event_id = database.get_open_event("guild")["id"]
+    stored = database.list_exclusions(event_id)
+    assert ("a", "bea") in stored and ("bea", "a") in stored
+    assert ("a", "cal") in stored and ("cal", "a") in stored
+    assert ("a", "a") not in stored
+    assert svc.skip_past_matches("guild", "a", [("a", "Ada")]).code == "bad_exclusion"
+
+    ready_participant(svc, "guild", "bea", "Bea")
+    ready_participant(svc, "guild", "c", "Cara")
+    ready_participant(svc, "guild", "d", "Dee")
+    assert svc.start("guild", "org", False).ok
+    pairs = {row["giver_id"]: row["receiver_id"] for row in database.list_pairings(event_id)}
+    assert pairs["a"] != "bea"
+    assert pairs["bea"] != "a"
+    later = svc.exclude("guild", "a", "eve", "Eve")
+    assert later.ok
+    assert "drawn again" in later.message
+    cleared = svc.unexclude("guild", "a", "cal", "Cal")
+    assert cleared.ok
+    assert "paired with you again" in cleared.message
+    assert ("a", "cal") not in database.list_exclusions(event_id)
+
+
+async def test_profile_menu_skips_server_members_who_have_not_joined():
+    from types import SimpleNamespace
+
+    from views import PastMatchSelect, ProfileView
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    ready_participant(svc, "guild", "ada", "Ada")
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+    class Response:
+        def __init__(self):
+            self.messages = []
+            self.done = False
+
+        def is_done(self):
+            return self.done
+
+        async def defer(self, ephemeral=False):
+            del ephemeral
+            self.done = True
+
+        async def send_message(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+            self.done = True
+
+    class Followup:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+
+    closed = ProfileView(Cog(), "guild", "ada", False, in_guild=False)
+    assert not any(isinstance(item, PastMatchSelect) for item in closed.children)
+    view = ProfileView(Cog(), "guild", "ada", False, in_guild=True)
+    select = next(item for item in view.children if isinstance(item, PastMatchSelect))
+    assert select.placeholder == "Someone you were paired with before"
+    select._values = [
+        SimpleNamespace(id="bot", display_name="Helper", bot=True),
+        SimpleNamespace(id="bea", display_name="Bea", bot=False),
+    ]
+    interaction = SimpleNamespace(user=SimpleNamespace(id="ada"), response=Response(), followup=Followup())
+    await select.callback(interaction)
+    event_id = database.get_open_event("guild")["id"]
+    assert ("ada", "bea") in database.list_exclusions(event_id)
+    assert ("ada", "bot") not in database.list_exclusions(event_id)
+    assert "Bea" in interaction.followup.messages[0]
+    assert "exclu" not in interaction.followup.messages[0].lower()
+
+    stranger = SimpleNamespace(user=SimpleNamespace(id="bea"), response=Response(), followup=Followup())
+    await select.callback(stranger)
+    assert "belongs to the person" in stranger.response.messages[0]
+
+
 def test_messages_exclusions_and_help_cover_the_remaining_rules():
     svc, _database = service()
     assert resolve_dm_events([]) is None
@@ -603,7 +703,9 @@ def test_messages_exclusions_and_help_cover_the_remaining_rules():
     ready_participant(svc, "guild", "a", "Ada")
     ready_participant(svc, "guild", "b", "Bea")
     assert svc.exclude("guild", "a", "a").code == "bad_exclusion"
-    assert svc.exclude("guild", "a", "missing").code == "not_joined"
+    remembered = svc.exclude("guild", "a", "missing", "Someone new")
+    assert remembered.ok
+    assert ("a", "missing") in _database.list_exclusions(_database.get_open_event("guild")["id"])
     assert svc.prepare_message("guild", "a", "giftee", "hello").code == "bad_phase"
     assert svc.set_deadline("guild", "org", False, "December").code == "bad_date"
     assert svc.start("guild", "org", False).ok

@@ -183,7 +183,7 @@ class EventService:
         if mapping is None:
             return failure(
                 "no_draw",
-                "No valid draw exists with the current exclusions. Change the exclusions and try again.",
+                "No valid draw exists with these past-match skips. Remove one and try again.",
             )
         self._save_mapping(event["id"], mapping, previous={})
         self.db.update_event(event["id"], phase=DRAWN)
@@ -241,30 +241,59 @@ class EventService:
         card = roster_card(event["name"], [person["name"] for person in participants])
         return success(card.text(), card=card, participants=participants)
 
-    def exclude(self, guild_id: str, user_id: str, other_id: str) -> Result:
+    def exclude(self, guild_id: str, user_id: str, other_id: str, other_name: str = "") -> Result:
+        return self.skip_past_matches(guild_id, user_id, [(other_id, other_name)])
+
+    def skip_past_matches(self, guild_id: str, user_id: str, others: list[tuple[str, str]]) -> Result:
+        """Remember people this participant was paired with before.
+
+        The other person does not have to have joined. The draw keeps the two
+        of them from being assigned to each other if both are in it.
+        """
         event = self._open(guild_id)
         if isinstance(event, Result):
             return event
         if event["phase"] == DONE:
             return failure("bad_phase", "This event is already finished.")
         user_id = str(user_id)
-        other_id = str(other_id)
-        if user_id == other_id:
-            return failure("bad_exclusion", "You cannot exclude yourself.")
         known = {person["user_id"] for person in self.db.list_participants(event["id"])}
-        if user_id not in known or other_id not in known:
-            return failure("not_joined", "Both people have to be in the event.")
-        self.db.add_exclusion_pair(event["id"], user_id, other_id)
-        return success("**Exclusion saved.** Those two participants will not be assigned to each other.")
+        if user_id not in known:
+            return failure(
+                "not_joined",
+                "Join the Secret Santa first, then choose anyone you were paired with before.",
+            )
+        saved: list[str] = []
+        seen: set[str] = set()
+        for other_id, other_name in others:
+            other_id = str(other_id).strip()
+            if not other_id or other_id == user_id or other_id in seen:
+                continue
+            seen.add(other_id)
+            self.db.add_exclusion_pair(event["id"], user_id, other_id)
+            saved.append(label(other_name, "them"))
+        if not saved:
+            return failure("bad_exclusion", "Pick someone else. You can't skip yourself.")
+        message = (
+            f"You won't be paired with {_people_phrase(saved)} this time. "
+            "They don't have to have joined yet."
+        )
+        if event["phase"] == DRAWN:
+            message += " Names are already out, so this applies if the matches are drawn again."
+        return success(message, skipped=saved)
 
-    def unexclude(self, guild_id: str, user_id: str, other_id: str) -> Result:
+    def unexclude(self, guild_id: str, user_id: str, other_id: str, other_name: str = "") -> Result:
         event = self._open(guild_id)
         if isinstance(event, Result):
             return event
-        removed = self.db.remove_exclusion_pair(event["id"], str(user_id), str(other_id))
+        user_id = str(user_id)
+        known = {person["user_id"] for person in self.db.list_participants(event["id"])}
+        if user_id not in known:
+            return failure("not_joined", "Join the Secret Santa first.")
+        removed = self.db.remove_exclusion_pair(event["id"], user_id, str(other_id))
         if not removed:
-            return failure("missing_exclusion", "That exclusion is not set.")
-        return success("**That exclusion was removed.**")
+            return failure("missing_exclusion", "They aren't on your past-match list.")
+        who = label(other_name, "They")
+        return success(f"**{who}** can be paired with you again.")
 
     def set_text_field(
         self,
@@ -678,6 +707,15 @@ class EventService:
         if is_admin or str(actor_id) == str(event["organizer_id"]):
             return None
         return failure("forbidden", "Only the organizer or a server admin can do that.")
+
+
+def _people_phrase(names: list[str]) -> str:
+    bolded = [f"**{name}**" for name in names]
+    if len(bolded) == 1:
+        return bolded[0]
+    if len(bolded) == 2:
+        return f"{bolded[0]} and {bolded[1]}"
+    return ", ".join(bolded[:-1]) + f", and {bolded[-1]}"
 
 
 def match_text(receiver: dict[str, Any]) -> str:
