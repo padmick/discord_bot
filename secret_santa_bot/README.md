@@ -14,6 +14,7 @@ Prefix commands use `s!`. The same actions are available as slash commands after
 - Anonymous messages with a Reply button
 - Gift progress: bought, shipped, received
 - Reminder settings the organizer edits in a form. The bot checks once a day and sends after the chosen number of days, weekly by default.
+- A welcome DM when someone joins, plus grouped help and an event guide
 
 ## Prerequisites
 
@@ -75,7 +76,7 @@ Server management (organizer or a server admin):
 
 Participants:
 
-- `s!join` / `s!leave`
+- `s!join` / `s!leave` - Joining sends a DM that explains the event. `s!help` groups the commands, and `s!info` shows the same guide.
 - `s!profile` - Private form for wishlist, notes, address, and the digital-gift toggle.
 - `s!setwishlist <text>` / `s!setaddress <text>` - In a server channel, the command message is deleted.
 - `s!myinfo` - DM your profile.
@@ -90,7 +91,7 @@ Participants:
 ## Event flow
 
 1. An organizer creates the event with `s!create`.
-2. Participants join and fill in a wishlist. A shipping address is required unless the gift is digital.
+2. Participants join, get a DM explaining the event, and fill in a wishlist. A shipping address is required unless the gift is digital.
 3. Optional: lock signup, set a deadline, add exclusions, and set reminder timing with `s!settings`.
 4. `s!start` writes a draw only when every profile is complete and a valid derangement exists.
 5. Each person is DMed their recipient. The organizer does not receive the full list.

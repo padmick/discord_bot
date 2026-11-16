@@ -9,28 +9,31 @@ from datetime import date
 import discord
 from discord.ext import commands, tasks
 
+from present import (
+    Card,
+    announcement_card,
+    anonymous_card,
+    command_help_card,
+    draw_waiting_card,
+    help_card,
+    info_card,
+    match_card,
+    profile_prompt_card,
+    profile_reminder_card,
+    removed_card,
+    reveal_cards,
+    shipping_reminder_card,
+    to_embed,
+    wishlist_update_card,
+)
 from services import (
     EventService,
     RateLimiter,
     anonymous_message_log,
-    assignment_text,
-    format_help,
     resolve_dm_events,
 )
 from utils import log_event, report_failure
 from views import NotificationSettingsView, ProfileView, ReplyView
-
-INFO_TEXT = "\n".join(
-    [
-        "Secret Santa runs one open event per server.",
-        "Phases: signup, locked, drawn, and done.",
-        "The organizer is not in the draw until they join.",
-        "The draw is not shown to the organizer. s!reveal is an explicit choice that breaks anonymity.",
-        "Wishlists and addresses typed in a server channel are deleted. Prefer /profile, which uses a private form.",
-        "A digital gift does not need a shipping address.",
-        "Use s!exclude so two people are not assigned to each other.",
-    ]
-)
 
 
 class RateLimited(commands.CommandError):
@@ -41,14 +44,32 @@ class RateLimited(commands.CommandError):
 
 
 class CustomHelpCommand(commands.DefaultHelpCommand):
+    def __init__(self, **options):
+        attrs = dict(options.get("command_attrs") or {})
+        attrs.setdefault("help", "Show commands grouped by what you are doing")
+        options["command_attrs"] = attrs
+        super().__init__(**options)
+
+    async def _visible(self, commands_to_list):
+        visible = [command for command in commands_to_list if not command.hidden]
+        filtered = await self.filter_commands(visible, sort=True)
+        return [(command.name, command.short_doc) for command in filtered]
+
     async def send_bot_help(self, mapping):
         del mapping
-        entries = []
-        for command in sorted(self.context.bot.commands, key=lambda item: item.name):
-            if command.hidden:
-                continue
-            entries.append((command.name, command.short_doc))
-        await _send_chunks(self.get_destination(), format_help(entries, self.context.clean_prefix))
+        entries = await self._visible(self.context.bot.commands)
+        await _send_card(self.get_destination(), help_card(entries, self.context.clean_prefix))
+
+    async def send_cog_help(self, cog):
+        entries = await self._visible(cog.get_commands())
+        await _send_card(self.get_destination(), help_card(entries, self.context.clean_prefix))
+
+    async def send_command_help(self, command):
+        signature = self.get_command_signature(command)
+        description = command.help or command.short_doc or "No description."
+        aliases = ", ".join(command.aliases)
+        footer = f"Also known as {aliases}." if aliases else "s!help lists every command."
+        await _send_card(self.get_destination(), command_help_card(signature, description, footer))
 
 
 class SecretSantaCog(commands.Cog):
@@ -86,16 +107,9 @@ class SecretSantaCog(commands.Cog):
             if user is not None:
                 try:
                     if target["kind"] == "profile":
-                        missing = ", ".join(target["missing"])
-                        await user.send(
-                            "Secret Santa still needs your "
-                            f"{missing}. Use /profile, s!setwishlist, or s!setaddress."
-                        )
+                        await user.send(embed=to_embed(profile_reminder_card(target["missing"])))
                     else:
-                        await user.send(
-                            "Your Secret Santa gift is not marked shipped yet. "
-                            f"The deadline is {target['deadline'].isoformat()}."
-                        )
+                        await user.send(embed=to_embed(shipping_reminder_card(target["deadline"])))
                 except discord.Forbidden:
                     pass
             marked.add((target["event_id"], target["kind"]))
@@ -117,25 +131,24 @@ class SecretSantaCog(commands.Cog):
         result = await self.run(self.service.create_event, str(ctx.guild.id), str(ctx.author.id), name)
         if result.ok:
             log_event("CREATE", f"guild {ctx.guild.id} organizer {ctx.author.id} event {result.data['event_id']}")
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
-    @commands.hybrid_command(name="join", help="Join the open Secret Santa")
+    @commands.hybrid_command(name="join", help="Join the open Secret Santa and get a DM that explains it")
     @commands.guild_only()
     async def join(self, ctx):
-        """Join the open Secret Santa."""
+        """Join the open Secret Santa and get a DM that explains it."""
         result = await self.run(self.service.join, str(ctx.guild.id), str(ctx.author.id), ctx.author.display_name)
+        welcome = (result.data or {}).get("welcome") if result.ok else None
+        delivered = await self._dm_card(str(ctx.author.id), welcome) if welcome is not None else False
         if result.ok:
             log_event("JOIN", f"guild {ctx.guild.id} user {ctx.author.id}")
-            try:
-                await ctx.author.send(
-                    "You joined Secret Santa.\n"
-                    "Set a wishlist with s!setwishlist or /profile.\n"
-                    "Set an address with s!setaddress, or choose a digital gift on /profile.\n"
-                    "Typed wishlists and addresses are deleted from server channels."
-                )
-            except discord.Forbidden:
-                pass
-        await _say(ctx, result.message)
+        if welcome is not None and delivered:
+            await _say(ctx, result.message + "\nThe guide is in your DMs.")
+        else:
+            await _show(ctx, result)
+        if welcome is not None and not delivered:
+            await _say(ctx, "I couldn't DM the welcome note, so here it is.")
+            await _send_card(ctx, welcome)
 
     @commands.hybrid_command(name="leave", help="Leave the Secret Santa")
     @commands.guild_only()
@@ -149,14 +162,14 @@ class SecretSantaCog(commands.Cog):
     async def lock(self, ctx):
         """Close signup."""
         result = await self.run(self.service.lock, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
     @commands.hybrid_command(name="unlock", help="Open signup again")
     @commands.guild_only()
     async def unlock(self, ctx):
         """Open signup again."""
         result = await self.run(self.service.unlock, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
     @commands.hybrid_command(name="deadline", help="Set the gift deadline as YYYY-MM-DD")
     @commands.guild_only()
@@ -169,7 +182,7 @@ class SecretSantaCog(commands.Cog):
             _is_admin(ctx),
             day,
         )
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
     @commands.hybrid_command(name="start", help="Draw matches and DM them")
     @commands.guild_only()
@@ -177,12 +190,9 @@ class SecretSantaCog(commands.Cog):
         """Draw matches and DM them."""
         result = await self.run(self.service.start, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
         if not result.ok:
-            await _say(ctx, result.message)
+            await _show(ctx, result)
             for person in (result.data or {}).get("missing", []):
-                await self._dm(
-                    person["user_id"],
-                    "The Secret Santa draw is waiting on your " + ", ".join(person["missing"]) + ".",
-                )
+                await self._dm_card(person["user_id"], draw_waiting_card(person["missing"]))
             return
         failed = 0
         for note in result.data["notifications"]:
@@ -199,7 +209,7 @@ class SecretSantaCog(commands.Cog):
     async def finish(self, ctx):
         """Archive the event so a new one can be created."""
         result = await self.run(self.service.finish, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
     @commands.hybrid_command(name="cancel", help="Delete the open event in this server")
     @commands.guild_only()
@@ -208,35 +218,35 @@ class SecretSantaCog(commands.Cog):
         result = await self.run(self.service.cancel, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
         if result.ok:
             log_event("CANCEL", f"guild {ctx.guild.id} user {ctx.author.id}")
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
     @commands.hybrid_command(name="status", help="Show the event phase and who is missing a profile")
     @commands.guild_only()
     async def status(self, ctx):
         """Show the event phase and who is missing a profile."""
         result = await self.run(self.service.status, str(ctx.guild.id))
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
     @commands.hybrid_command(name="participants", help="List participants")
     @commands.guild_only()
     async def participants(self, ctx):
         """List participants."""
         result = await self.run(self.service.roster, str(ctx.guild.id))
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
-    @commands.hybrid_command(name="exclude", help="Keep two participants from being assigned")
+    @commands.hybrid_command(name="exclude", help="Keep two people from being assigned to each other")
     @commands.guild_only()
     async def exclude(self, ctx, member: discord.Member):
-        """Keep two participants from being assigned."""
+        """Keep two people from being assigned to each other."""
         result = await self.run(self.service.exclude, str(ctx.guild.id), str(ctx.author.id), str(member.id))
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
     @commands.hybrid_command(name="unexclude", help="Remove an exclusion")
     @commands.guild_only()
     async def unexclude(self, ctx, member: discord.Member):
         """Remove an exclusion."""
         result = await self.run(self.service.unexclude, str(ctx.guild.id), str(ctx.author.id), str(member.id))
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
     @commands.hybrid_command(name="remove", help="Remove a participant")
     @commands.guild_only()
@@ -250,10 +260,7 @@ class SecretSantaCog(commands.Cog):
             _is_admin(ctx),
         )
         if result.ok:
-            await self._dm(
-                str(member.id),
-                "You were removed from the Secret Santa by the organizer.",
-            )
+            await self._dm_card(str(member.id), removed_card())
         await self._after_roster_change(ctx, result, "REMOVE")
 
     @commands.hybrid_command(name="profile", help="Open the private profile form")
@@ -264,7 +271,7 @@ class SecretSantaCog(commands.Cog):
             return
         info = await self.run(self.service.my_info, event["guild_id"], str(ctx.author.id))
         if not info.ok:
-            await _say(ctx, info.message)
+            await _show(ctx, info)
             return
         view = ProfileView(
             self,
@@ -272,9 +279,9 @@ class SecretSantaCog(commands.Cog):
             str(ctx.author.id),
             bool((info.data or {}).get("digital_only")),
         )
-        await _say(
+        await _send_card(
             ctx,
-            "Update your profile with these buttons. The address stays in the form.",
+            profile_prompt_card(),
             view=view,
             ephemeral=ctx.interaction is not None,
         )
@@ -297,9 +304,9 @@ class SecretSantaCog(commands.Cog):
             return
         result = await self.run(self.service.my_info, event["guild_id"], str(ctx.author.id))
         if not result.ok:
-            await _say(ctx, result.message)
+            await _show(ctx, result)
             return
-        await self._private(ctx, result.message)
+        await self._private(ctx, result.message, card=result.card)
 
     @commands.hybrid_command(name="match", help="DM your match again")
     async def match(self, ctx):
@@ -311,9 +318,9 @@ class SecretSantaCog(commands.Cog):
         """DM your match again."""
         await self._send_match(ctx)
 
-    @commands.hybrid_command(name="message", help="Send an anonymous message to gifter or giftee")
+    @commands.hybrid_command(name="message", help="Send an anonymous note to your gifter or giftee")
     async def message(self, ctx, recipient_type: str, *, text: str):
-        """Send an anonymous message to gifter or giftee."""
+        """Send an anonymous note to your gifter or giftee."""
         await _delete_invocation(ctx)
         await self._send_anonymous(ctx.author, ctx.guild, recipient_type, text, _say_ctx(ctx))
 
@@ -324,12 +331,12 @@ class SecretSantaCog(commands.Cog):
         if event is None:
             return
         result = await self.run(self.service.set_gift_status, event["guild_id"], str(ctx.author.id), status)
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
-    @commands.hybrid_command(name="settings", help="Choose reminder notifications and how often they send")
+    @commands.hybrid_command(name="settings", help="Choose which reminders send and how many days apart")
     @commands.guild_only()
     async def settings(self, ctx):
-        """Choose reminder notifications and how often they send."""
+        """Choose which reminders send and how many days apart."""
         result = await self.run(
             self.service.notification_settings,
             str(ctx.guild.id),
@@ -337,11 +344,11 @@ class SecretSantaCog(commands.Cog):
             _is_admin(ctx),
         )
         if not result.ok:
-            await _say(ctx, result.message)
+            await _show(ctx, result)
             return
-        await _say(
+        await _show(
             ctx,
-            result.message,
+            result,
             view=NotificationSettingsView(self, str(ctx.guild.id)),
             ephemeral=ctx.interaction is not None,
         )
@@ -357,17 +364,14 @@ class SecretSantaCog(commands.Cog):
             _is_admin(ctx),
         )
         if not result.ok or not (result.data or {}).get("users"):
-            await _say(ctx, result.message)
+            await _show(ctx, result)
             return
         sent = 0
         for person in result.data["users"]:
-            if await self._dm(
-                person["user_id"],
-                "Secret Santa still needs your " + ", ".join(person["missing"]) + ".",
-            ):
+            if await self._dm_card(person["user_id"], profile_reminder_card(person["missing"])):
                 sent += 1
         log_event("REMIND", f"guild {ctx.guild.id} user {ctx.author.id} count {sent}")
-        await _say(ctx, f"Sent reminders to {sent} participant(s).")
+        await _say(ctx, f"**Sent reminders** to {sent} participant(s).")
 
     @commands.hybrid_command(name="broadcast", help="DM every participant")
     @commands.guild_only()
@@ -383,23 +387,23 @@ class SecretSantaCog(commands.Cog):
             _is_admin(ctx),
         )
         if not result.ok:
-            await _say(ctx, result.message)
+            await _show(ctx, result)
             return
         sent = 0
         failed = 0
-        body = f"Announcement from the Secret Santa organizer:\n\n{text}"
+        card = announcement_card(text)
         for user_id in result.data["user_ids"]:
-            if await self._dm(user_id, body):
+            if await self._dm_card(user_id, card):
                 sent += 1
             else:
                 failed += 1
         log_event("BROADCAST", f"guild {ctx.guild.id} user {ctx.author.id} sent {sent} failed {failed}")
-        await _say(ctx, f"Sent the announcement to {sent} participant(s). {failed} could not be reached.")
+        await _say(ctx, f"**Sent the announcement** to {sent} participant(s). {failed} could not be reached.")
 
-    @commands.hybrid_command(name="info", help="How this bot runs an event")
+    @commands.hybrid_command(name="info", help="Explain how a Secret Santa event works")
     async def info(self, ctx):
-        """How this bot runs an event."""
-        await _say(ctx, INFO_TEXT)
+        """Explain how a Secret Santa event works."""
+        await _send_card(ctx, info_card(), ephemeral=ctx.interaction is not None)
 
     @commands.hybrid_command(name="logs", help="DM the latest log lines")
     @commands.guild_only()
@@ -459,10 +463,10 @@ class SecretSantaCog(commands.Cog):
         log_event("RATELIMIT", f"guild {ctx.guild.id} user {ctx.author.id} action {action}")
         await _say(ctx, text)
 
-    @commands.hybrid_command(name="reveal", help="DM the organizer the full draw")
+    @commands.hybrid_command(name="reveal", help="DM the full draw. Confirm with the word reveal")
     @commands.guild_only()
     async def reveal(self, ctx, confirmation: str = ""):
-        """DM the organizer the full draw."""
+        """DM the full draw. Confirm with the word reveal."""
         token = confirmation.strip().lower()
         if token != "reveal":
             await _say(
@@ -482,11 +486,12 @@ class SecretSantaCog(commands.Cog):
             token,
         )
         if not result.ok:
-            await _say(ctx, result.message)
+            await _show(ctx, result)
             return
         log_event("REVEAL", f"event {result.data['event_id']} by {ctx.author.id}")
         try:
-            await _send_chunks(ctx.author, result.data["dm_text"])
+            for card in reveal_cards(result.data["pairings"]):
+                await _send_card(ctx.author, card)
         except discord.Forbidden:
             await _say(ctx, "I couldn't DM you the draw. Allow DMs from server members.")
             return
@@ -502,8 +507,10 @@ class SecretSantaCog(commands.Cog):
         await self._send_anonymous(interaction.user, interaction.guild, direction, text, respond)
 
     async def notify_wishlist(self, payload: dict):
-        wishlist = payload.get("wishlist") or "Their wishlist is now empty."
-        await self._dm(payload["notify_gifter_id"], f"Your giftee updated their wishlist:\n{wishlist}")
+        await self._dm_card(
+            payload["notify_gifter_id"],
+            wishlist_update_card(payload.get("wishlist") or ""),
+        )
 
     async def _set_field(self, ctx, field_name: str, value: str):
         await _delete_invocation(ctx)
@@ -530,9 +537,9 @@ class SecretSantaCog(commands.Cog):
             return
         result = await self.run(self.service.match_info, event["guild_id"], str(ctx.author.id))
         if not result.ok:
-            await _say(ctx, result.message)
+            await _show(ctx, result)
             return
-        await self._private(ctx, result.message, reply_as="giftee")
+        await self._private(ctx, result.message, reply_as="giftee", card=result.card)
 
     async def _send_anonymous(self, user, guild, recipient_type: str, text: str, respond):
         if guild is not None:
@@ -561,24 +568,23 @@ class SecretSantaCog(commands.Cog):
             return
         direction = result.data["direction"]
         reply_as = result.data["reply_as"]
-        if direction == "giftee":
-            heading = "Your Secret Santa sent you a message:"
-        else:
-            heading = "Your giftee sent you a message:"
-        body = f"{heading}\n\n{result.data['body']}\n\nReply with the button or s!message {reply_as}."
-        delivered = await self._dm(result.data["target_id"], body, reply_as=reply_as)
+        delivered = await self._dm_card(
+            result.data["target_id"],
+            anonymous_card(direction, result.data["body"], reply_as),
+            reply_as=reply_as,
+        )
         log_event("MESSAGE", anonymous_message_log(delivered, direction))
         if delivered:
-            await respond("The anonymous message was sent.")
+            await respond("**Sent.** They received the anonymous note.")
         else:
-            await respond("The message could not be delivered. Their DMs are closed.")
+            await respond("**Not delivered.** Their DMs are closed.")
 
     async def _after_roster_change(self, ctx, result, action: str):
         for note in (result.data or {}).get("changed", []):
             await self._dm_assignment(note)
         if result.ok:
             log_event(action, f"guild {ctx.guild.id} user {ctx.author.id}")
-        await _say(ctx, result.message)
+        await _show(ctx, result)
 
     async def _personal_event(self, ctx):
         event = await self._event_for(str(ctx.author.id), ctx.guild)
@@ -601,28 +607,28 @@ class SecretSantaCog(commands.Cog):
         return resolve_dm_events(participations)
 
     async def _dm_assignment(self, note: dict) -> bool:
-        return await self._dm(note["giver_id"], assignment_text(note), reply_as="giftee")
+        return await self._dm_card(note["giver_id"], _match_card(note), reply_as="giftee")
 
-    async def _dm(self, user_id: str, text: str, reply_as: str | None = None) -> bool:
+    async def _dm_card(self, user_id: str, card: Card, reply_as: str | None = None) -> bool:
         user = await self._user(user_id)
         if user is None:
             return False
         try:
-            await _send_chunks(user, text, reply_as=reply_as)
+            await _send_card(user, card, reply_as=reply_as)
             return True
         except discord.Forbidden:
             return False
 
-    async def _private(self, ctx, text: str, reply_as: str | None = None):
+    async def _private(self, ctx, text: str, reply_as: str | None = None, card: Card | None = None):
         if ctx.guild is None:
-            await _send_chunks(ctx, text, reply_as=reply_as)
+            await _deliver_private(ctx, text, reply_as, card)
             return
         try:
-            await _send_chunks(ctx.author, text, reply_as=reply_as)
+            await _deliver_private(ctx.author, text, reply_as, card)
         except discord.Forbidden:
             await _say(ctx, "I couldn't DM you. Allow DMs from server members.")
             return
-        await _say(ctx, "I sent that in a DM.")
+        await _say(ctx, "**Sent in a DM.**")
 
     async def _user(self, user_id: str):
         try:
@@ -665,6 +671,45 @@ async def _delete_invocation(ctx):
         await message.delete()
     except (discord.Forbidden, discord.NotFound, discord.HTTPException):
         pass
+
+
+def _match_card(note: dict) -> Card:
+    return match_card(
+        {
+            "name": note["receiver_name"],
+            "wishlist": note.get("wishlist"),
+            "address": note.get("address"),
+            "do_not_gift": note.get("do_not_gift"),
+            "notes": note.get("notes"),
+            "digital_only": note.get("digital_only"),
+        }
+    )
+
+
+async def _deliver_private(destination, text: str, reply_as: str | None, card: Card | None):
+    if card is not None:
+        await _send_card(destination, card, reply_as=reply_as)
+        return
+    await _send_chunks(destination, text, reply_as=reply_as)
+
+
+async def _show(ctx, result, *, view=None, ephemeral: bool = False):
+    if result.card is not None:
+        await _send_card(ctx, result.card, view=view, ephemeral=ephemeral)
+        return
+    await _say(ctx, result.message, view=view, ephemeral=ephemeral)
+
+
+async def _send_card(destination, card: Card, *, view=None, ephemeral: bool = False, reply_as: str | None = None):
+    extra = {}
+    if ephemeral:
+        extra["ephemeral"] = True
+    chosen = view
+    if chosen is None and reply_as:
+        chosen = ReplyView(reply_as)
+    if chosen is not None:
+        extra["view"] = chosen
+    await destination.send(embed=to_embed(card), **extra)
 
 
 async def _say(ctx, content: str, *, view=None, ephemeral: bool = False):

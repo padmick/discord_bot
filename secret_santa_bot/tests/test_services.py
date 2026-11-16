@@ -279,6 +279,9 @@ def test_profile_updates_for_members_only_and_channel_text_is_flagged():
     status = svc.status("guild")
     assert "99 Private Road" not in status.message
     assert "hidden street" not in status.message
+    assert "records" not in status.message
+    assert status.card is not None
+    assert status.card.title == "Party"
     assert status.data["missing_wishlist"] == []
     event = database.get_open_event("guild")
     assert database.get_participant(event["id"], "a")["address"] == "hidden street"
@@ -383,7 +386,9 @@ def test_reveal_requires_the_confirmation_token():
 
     revealed = svc.reveal("guild", "org", False, "reveal")
     assert revealed.ok
+    assert revealed.card is None
     assert "->" not in revealed.message
+    assert "Ada" not in revealed.message
     assert "->" in revealed.data["dm_text"]
     assert len(revealed.data["pairings"]) == 2
 
@@ -550,10 +555,12 @@ async def test_notification_form_saves_the_organizer_choices():
     class Followup:
         def __init__(self):
             self.messages = []
+            self.embeds = []
 
-        async def send(self, message, ephemeral=False):
+        async def send(self, message=None, ephemeral=False, embed=None):
             del ephemeral
             self.messages.append(message)
+            self.embeds.append(embed)
 
     current = svc.notification_settings("guild", "org", False)
     modal = NotificationSettingsModal(Cog(), "guild", current.data)
@@ -569,6 +576,8 @@ async def test_notification_form_saves_the_organizer_choices():
     assert event["reminder_interval_days"] == 10
     assert event["shipping_lead_days"] == 0
     assert saved.followup.messages[0].startswith("Notification settings saved.")
+    assert saved.followup.embeds[0].title == "Reminder settings"
+    assert "10 day(s)" in saved.followup.embeds[0].description
 
     rejected = SimpleNamespace(user=SimpleNamespace(id="late"), response=Response(), followup=Followup())
     modal.profile_reminders._value = "on"
@@ -582,7 +591,12 @@ def test_messages_exclusions_and_help_cover_the_remaining_rules():
     assert resolve_dm_events([]) is None
     assert resolve_dm_events([{"id": 1}, {"id": 2}]) is None
     assert resolve_dm_events([{"id": 7}])["id"] == 7
-    assert format_help([("join", "Join the event")], "s!") == "Available commands:\ns!join - Join the event"
+    help_text = format_help([("join", "Join the event"), ("start", "Draw the names")], "s!")
+    assert "Getting started" in help_text
+    assert "`s!join` — Join the event" in help_text
+    assert "Organizer" in help_text
+    assert "`s!start` — Draw the names" in help_text
+    assert help_text.index("Getting started") < help_text.index("`s!join`") < help_text.index("Organizer")
     assert "exclude" not in format_help([("join", "Join")], "s!")
 
     svc.create_event("guild", "org", "Party")

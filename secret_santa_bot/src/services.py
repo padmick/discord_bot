@@ -8,6 +8,17 @@ from datetime import date, datetime
 from typing import Any
 
 from matching import assign_derangement, reroll_after_removal
+from present import (
+    Card,
+    format_help,
+    label,
+    match_card,
+    profile_card,
+        roster_card,
+    settings_card,
+    status_card,
+    welcome_card,
+)
 
 SIGNUP = "signup"
 LOCKED = "locked"
@@ -33,10 +44,11 @@ class Result:
     code: str
     message: str
     data: dict[str, Any] | None = None
+    card: Card | None = None
 
 
-def success(message: str, **data: Any) -> Result:
-    return Result(True, "ok", message, data or None)
+def success(message: str, *, card: Card | None = None, **data: Any) -> Result:
+    return Result(True, "ok", message, data or None, card)
 
 
 def failure(code: str, message: str, **data: Any) -> Result:
@@ -64,13 +76,6 @@ def anonymous_message_log(success_flag: bool, direction: str, display_name: str 
     return f"{status} anonymous {direction}"
 
 
-def format_help(entries: list[tuple[str, str]], prefix: str = "s!") -> str:
-    lines = ["Available commands:"]
-    for name, description in entries:
-        lines.append(f"{prefix}{name} - {description or 'No description.'}")
-    return "\n".join(lines)
-
-
 def resolve_dm_events(participations: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Return the only open participation, or None when the DM is ambiguous."""
     if len(participations) == 1:
@@ -96,7 +101,7 @@ class EventService:
             )
         event = self.db.create_event(guild_id, cleaned, organizer_id)
         return success(
-            f"Created {cleaned}. The organizer is not in the draw until they join.",
+            f"**Created {label(cleaned, 'Secret Santa')}.** The organizer is not in the draw until they join.",
             event_id=event["id"],
         )
 
@@ -107,7 +112,10 @@ class EventService:
         if event["phase"] != SIGNUP:
             return failure("closed", "Joining is closed for this event.")
         self.db.add_participant(event["id"], str(user_id), name)
-        return success(f"{name} joined {event['name']}.")
+        return success(
+            f"**{label(name, 'Someone')}** joined **{label(event['name'], 'Secret Santa')}**.",
+            welcome=welcome_card(name, event["name"]),
+        )
 
     def leave(self, guild_id: str, user_id: str) -> Result:
         return self._drop(guild_id, str(user_id), acting_on_self=True)
@@ -128,7 +136,7 @@ class EventService:
         if event["phase"] != SIGNUP:
             return failure("bad_phase", "Signup can only be locked before the draw.")
         self.db.update_event(event["id"], phase=LOCKED)
-        return success("Signup is locked. Profile edits are still open.")
+        return success("**Signup is locked.** Profile edits are still open.")
 
     def unlock(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
         event = self._managed(guild_id, actor_id, is_admin)
@@ -137,7 +145,7 @@ class EventService:
         if event["phase"] != LOCKED:
             return failure("bad_phase", "Only a locked signup can be unlocked.")
         self.db.update_event(event["id"], phase=SIGNUP)
-        return success("Signup is open again.")
+        return success("**Signup is open again.**")
 
     def set_deadline(self, guild_id: str, actor_id: str, is_admin: bool, day: str) -> Result:
         event = self._managed(guild_id, actor_id, is_admin)
@@ -148,7 +156,7 @@ class EventService:
         except (TypeError, ValueError):
             return failure("bad_date", "Use a deadline like 2026-12-20.")
         self.db.update_event(event["id"], deadline=parsed)
-        return success(f"Deadline set to {parsed.isoformat()}.")
+        return success(f"**Deadline set to {parsed.isoformat()}.**")
 
     def start(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
         event = self._managed(guild_id, actor_id, is_admin)
@@ -181,7 +189,7 @@ class EventService:
         self.db.update_event(event["id"], phase=DRAWN)
         profiles = {person["user_id"]: person for person in participants}
         return success(
-            "Secret Santa has begun. Participants received their matches by DM.",
+            "**Secret Santa has begun.** Participants received their matches by DM.",
             notifications=[self._notification(giver, receiver, profiles) for giver, receiver in mapping.items()],
         )
 
@@ -192,14 +200,14 @@ class EventService:
         if event["phase"] != DRAWN:
             return failure("bad_phase", "Finish is available after the draw.")
         self.db.update_event(event["id"], phase=DONE)
-        return success("The event is finished. You can create a new one in this server.")
+        return success("**The event is finished.** You can create a new one in this server.")
 
     def cancel(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
         event = self._managed(guild_id, actor_id, is_admin)
         if isinstance(event, Result):
             return event
         self.db.delete_event(event["id"])
-        return success("The Secret Santa event was cancelled.")
+        return success("**The Secret Santa event was cancelled.**")
 
     def status(self, guild_id: str) -> Result:
         event = self._open(guild_id)
@@ -222,19 +230,16 @@ class EventService:
             "missing_address": missing_address,
             "gift_counts": gift_counts,
         }
-        return success(_status_message(payload), **payload)
+        card = status_card(payload)
+        return success(card.text(), card=card, **payload)
 
     def roster(self, guild_id: str) -> Result:
         event = self._open(guild_id)
         if isinstance(event, Result):
             return event
         participants = self.db.list_participants(event["id"])
-        if not participants:
-            return success("Nobody has joined yet.", participants=[])
-        lines = ["Current participants:"]
-        for index, person in enumerate(participants, start=1):
-            lines.append(f"{index}. {person['name']}")
-        return success("\n".join(lines), participants=participants)
+        card = roster_card(event["name"], [person["name"] for person in participants])
+        return success(card.text(), card=card, participants=participants)
 
     def exclude(self, guild_id: str, user_id: str, other_id: str) -> Result:
         event = self._open(guild_id)
@@ -250,7 +255,7 @@ class EventService:
         if user_id not in known or other_id not in known:
             return failure("not_joined", "Both people have to be in the event.")
         self.db.add_exclusion_pair(event["id"], user_id, other_id)
-        return success("Those two participants will not be assigned to each other.")
+        return success("**Exclusion saved.** Those two participants will not be assigned to each other.")
 
     def unexclude(self, guild_id: str, user_id: str, other_id: str) -> Result:
         event = self._open(guild_id)
@@ -259,7 +264,7 @@ class EventService:
         removed = self.db.remove_exclusion_pair(event["id"], str(user_id), str(other_id))
         if not removed:
             return failure("missing_exclusion", "That exclusion is not set.")
-        return success("That exclusion was removed.")
+        return success("**That exclusion was removed.**")
 
     def set_text_field(
         self,
@@ -325,7 +330,7 @@ class EventService:
             if giver_id:
                 payload["notify_gifter_id"] = giver_id
                 payload["wishlist"] = stored.get("wishlist") or ""
-        return success("Profile saved.", **payload)
+        return success("**Profile saved.**", **payload)
 
     def my_info(self, guild_id: str, user_id: str) -> Result:
         event = self._open(guild_id)
@@ -334,7 +339,8 @@ class EventService:
         participant = self.db.get_participant(event["id"], str(user_id))
         if participant is None:
             return failure("not_joined", "You have not joined this Secret Santa.")
-        return success(_profile_message(participant), **participant)
+        card = profile_card(participant)
+        return success(card.text(), card=card, **participant)
 
     def match_info(self, guild_id: str, user_id: str) -> Result:
         event = self._open(guild_id)
@@ -348,7 +354,8 @@ class EventService:
         receiver = self.db.get_participant(event["id"], pairing["receiver_id"])
         if receiver is None:
             return failure("no_match", "The match could not be loaded.")
-        return success(match_text(receiver), **receiver)
+        card = match_card(receiver)
+        return success(card.text(), card=card, **receiver)
 
     def set_gift_status(self, guild_id: str, user_id: str, status: str) -> Result:
         event = self._open(guild_id)
@@ -367,7 +374,7 @@ class EventService:
             if mine["gift_status"] != expected:
                 return failure("bad_transition", "That skips a step. Update the gift one step at a time.")
             self.db.set_gift_status(event["id"], user_id, status)
-            return success(f"Marked the gift {status.replace('_', ' ')}.")
+            return success(f"**Marked the gift {status.replace('_', ' ')}.**")
         if status == "received":
             mine = next((row for row in pairings if row["receiver_id"] == user_id), None)
             if mine is None:
@@ -375,7 +382,7 @@ class EventService:
             if mine["gift_status"] != "shipped":
                 return failure("bad_transition", "The gift has to be shipped before it can be marked received.")
             self.db.set_gift_status(event["id"], mine["giver_id"], "received")
-            return success("Marked the gift received.")
+            return success("**Marked the gift received.**")
         return failure("bad_status", "Use bought, shipped, or received.")
 
     def prepare_message(self, guild_id: str, user_id: str, recipient_type: str, text: str) -> Result:
@@ -437,7 +444,7 @@ class EventService:
         lines = ["Full draw. Anonymity is broken for the organizer.", ""]
         lines.extend(f"{row['giver_name']} -> {row['receiver_name']}" for row in rows)
         return success(
-            "I sent the full draw in a DM. Anonymity is broken for you.",
+            "**Sent in a DM.** Anonymity is broken for you. The pairs were not posted here.",
             pairings=rows,
             dm_text="\n".join(lines),
             event_id=event["id"],
@@ -453,8 +460,8 @@ class EventService:
             if missing:
                 users.append({"user_id": person["user_id"], "name": person["name"], "missing": missing})
         if not users:
-            return success("Everyone has the information the draw needs.", users=[])
-        return success(f"{len(users)} participant(s) still need profile details.", users=users)
+            return success("**Everyone is ready.** The draw has the profiles it needs.", users=[])
+        return success(f"**{len(users)} participant(s)** still need profile details.", users=users)
 
     def broadcast_recipients(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
         event = self._managed(guild_id, actor_id, is_admin)
@@ -475,7 +482,14 @@ class EventService:
         event = self._managed(guild_id, actor_id, is_admin)
         if isinstance(event, Result):
             return event
-        return success(_settings_message(event), **_settings_payload(event))
+        payload = _settings_payload(event)
+        card = settings_card(
+            payload["profile_reminders"],
+            payload["shipping_reminders"],
+            payload["reminder_interval_days"],
+            payload["shipping_lead_days"],
+        )
+        return success(card.text(), card=card, **payload)
 
     def update_notification_settings(
         self,
@@ -514,7 +528,14 @@ class EventService:
             shipping_lead_days=lead,
         )
         updated = self.db.get_event(event["id"])
-        return success("Notification settings saved.\n" + _settings_message(updated), **_settings_payload(updated))
+        payload = _settings_payload(updated)
+        card = settings_card(
+            payload["profile_reminders"],
+            payload["shipping_reminders"],
+            payload["reminder_interval_days"],
+            payload["shipping_lead_days"],
+        )
+        return success("Notification settings saved.\n" + card.text(), card=card, **payload)
 
     def select_reminders(self, today: date) -> list[dict[str, Any]]:
         selected = []
@@ -580,8 +601,8 @@ class EventService:
             return failure("closed", "The roster is locked. Unlock signup before changing it.")
         if event["phase"] == SIGNUP:
             self.db.delete_participant(event["id"], user_id)
-            verb = "You left" if acting_on_self else f"{participant['name']} was removed from"
-            return success(f"{verb} the event.")
+            verb = "You left" if acting_on_self else f"{label(participant['name'], 'They')} was removed from"
+            return success(f"**{verb} the event.**")
         if event["phase"] != DRAWN:
             return failure("bad_phase", "The roster cannot change in this phase.")
 
@@ -601,8 +622,8 @@ class EventService:
             for giver, receiver in redrawn.items()
             if current.get(giver, {}).get("receiver_id") != receiver
         ]
-        verb = "You left" if acting_on_self else f"{participant['name']} was removed from"
-        return success(f"{verb} the event. Changed matches were sent by DM.", changed=changed)
+        verb = "You left" if acting_on_self else f"{label(participant['name'], 'They')} was removed from"
+        return success(f"**{verb} the event.** Changed matches were sent by DM.", changed=changed)
 
     def _save_mapping(self, event_id: int, mapping: dict[str, str], previous: dict[str, dict[str, str]]) -> None:
         pairs = []
@@ -659,56 +680,8 @@ class EventService:
         return failure("forbidden", "Only the organizer or a server admin can do that.")
 
 
-def _status_message(payload: dict[str, Any]) -> str:
-    deadline = payload["deadline"] or "not set"
-    lines = [
-        f"{payload['name']} is in the {payload['phase']} phase.",
-        f"Deadline: {deadline}.",
-        f"Participants: {payload['count']}.",
-    ]
-    if payload["missing_wishlist"]:
-        lines.append("Missing a wishlist: " + ", ".join(payload["missing_wishlist"]) + ".")
-    if payload["missing_address"]:
-        lines.append("Missing an address: " + ", ".join(payload["missing_address"]) + ".")
-    counts = payload["gift_counts"]
-    if counts is not None:
-        lines.append(
-            "Gifts: "
-            + ", ".join(f"{counts[status]} {status.replace('_', ' ')}" for status in GIFT_STATUSES)
-            + "."
-        )
-    return "\n".join(lines)
-
-
-def _profile_message(participant: dict[str, Any]) -> str:
-    digital = "yes" if participant.get("digital_only") else "no"
-    return "\n".join(
-        [
-            "Your Secret Santa profile:",
-            f"Wishlist: {participant.get('wishlist') or 'not set'}",
-            f"Address: {participant.get('address') or 'not set'}",
-            f"Do not gift: {participant.get('do_not_gift') or 'not set'}",
-            f"Notes: {participant.get('notes') or 'not set'}",
-            f"Digital gift: {digital}",
-        ]
-    )
-
-
 def match_text(receiver: dict[str, Any]) -> str:
-    if receiver.get("digital_only"):
-        address = "Digital gift. No shipping address."
-    else:
-        address = receiver.get("address") or "No address set"
-    return "\n".join(
-        [
-            "Your Secret Santa match:",
-            f"Recipient: {receiver['name']}",
-            f"Wishlist: {receiver.get('wishlist') or 'No wishlist set'}",
-            f"Do not gift: {receiver.get('do_not_gift') or 'not set'}",
-            f"Notes: {receiver.get('notes') or 'not set'}",
-            f"Delivery: {address}",
-        ]
-    )
+    return match_card(receiver).text()
 
 
 def shipping_reminder_due(deadline: date, today: date, lead_days: int) -> bool:
@@ -743,21 +716,6 @@ def _settings_payload(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _settings_message(event: dict[str, Any]) -> str:
-    settings = _settings_payload(event)
-    profile = "on" if settings["profile_reminders"] else "off"
-    shipping = "on" if settings["shipping_reminders"] else "off"
-    return "\n".join(
-        [
-            f"Profile reminders: {profile}.",
-            f"Shipping reminders: {shipping}.",
-            f"The bot checks once a day and sends a reminder after {settings['reminder_interval_days']} day(s).",
-            f"Shipping reminders start {settings['shipping_lead_days']} day(s) before the deadline.",
-            "s!remind still sends a profile reminder immediately.",
-        ]
-    )
-
-
 def assignment_text(note: dict[str, Any]) -> str:
     receiver = {
         "name": note["receiver_name"],
@@ -767,7 +725,7 @@ def assignment_text(note: dict[str, Any]) -> str:
         "notes": note.get("notes"),
         "digital_only": note.get("digital_only"),
     }
-    return match_text(receiver) + "\nYou can message them anonymously with s!message giftee."
+    return match_text(receiver)
 
 
 # Imported by the rate limiter tests through services to keep the rule next
