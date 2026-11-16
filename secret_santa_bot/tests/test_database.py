@@ -41,6 +41,7 @@ def test_guilds_stay_isolated_across_cancel_and_finish(db):
 
 
 def test_open_participations_use_the_event_columns(db):
+    """events and participants both have id and name, so the join must name the event columns."""
     first = db.create_event("guild-a", "Alpha", "org-a")
     second = db.create_event("guild-b", "Beta", "org-b")
     finished = db.create_event("guild-c", "Old", "org-c")

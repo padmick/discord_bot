@@ -17,7 +17,7 @@ from services import (
     format_help,
     resolve_dm_events,
 )
-from utils import log_event
+from utils import log_event, report_failure
 from views import ProfileView, ReplyView
 
 INFO_TEXT = "\n".join(
@@ -104,6 +104,10 @@ class SecretSantaCog(commands.Cog):
     @daily_reminders.before_loop
     async def _wait_for_bot(self):
         await self.bot.wait_until_ready()
+
+    @daily_reminders.error
+    async def _on_reminder_error(self, error):
+        report_failure("daily reminders", error)
 
     @commands.hybrid_command(name="create", help="Create a Secret Santa event in this server")
     @commands.guild_only()

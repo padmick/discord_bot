@@ -13,6 +13,7 @@ from flask import Flask
 
 from cogs.secret_santa import CustomHelpCommand, RateLimited, SecretSantaCog
 from database import DatabaseManager
+from utils import logger, report_failure
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -53,12 +54,47 @@ async def on_ready():
             runtime["synced"] = True
             print(f"Synced {len(synced)} slash commands")
         except Exception as exc:
-            print(f"Slash command sync failed: {exc}")
+            report_failure("slash command sync", exc)
     await bot.change_presence(activity=discord.Game(name="Secret Santa"))
+
+
+_USAGE_ERRORS = (
+    commands.CommandNotFound,
+    commands.CheckFailure,
+    commands.MissingRequiredArgument,
+    commands.BadArgument,
+)
+
+
+def command_failure_where(ctx) -> str:
+    command = getattr(getattr(ctx, "command", None), "qualified_name", None) or "unknown"
+    guild_id = getattr(getattr(ctx, "guild", None), "id", None) or "dm"
+    user_id = getattr(getattr(ctx, "author", None), "id", "unknown")
+    return f"command {command} guild {guild_id} user {user_id}"
+
+
+def interaction_failure_where(interaction) -> str:
+    command = getattr(getattr(interaction, "command", None), "qualified_name", None) or "unknown"
+    guild_id = getattr(interaction, "guild_id", None) or "dm"
+    user_id = getattr(getattr(interaction, "user", None), "id", "unknown")
+    return f"command {command} guild {guild_id} user {user_id}"
+
+
+def record_command_problem(where: str, error: BaseException) -> None:
+    """Write a command failure to stderr. Usage mistakes stay at info."""
+    original = getattr(error, "original", error)
+    if isinstance(error, RateLimited) or isinstance(original, RateLimited):
+        return
+    shown = original if isinstance(original, BaseException) else error
+    if isinstance(error, _USAGE_ERRORS) or isinstance(shown, _USAGE_ERRORS):
+        logger.info("%s rejected: %s: %s", where, type(shown).__name__, shown)
+        return
+    report_failure(where, error)
 
 
 @bot.event
 async def on_command_error(ctx, error):
+    record_command_problem(command_failure_where(ctx), error)
     original = getattr(error, "original", error)
     if isinstance(original, RateLimited):
         return
@@ -74,16 +110,15 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.BadArgument):
         await ctx.send("I couldn't read one of those values. Use `s!help` if you need the command shape.")
         return
-    print(f"Error: {error}", flush=True)
     await ctx.send(f"An error occurred: {str(original)[:900]}")
 
 
 @bot.tree.error
 async def on_app_command_error(interaction, error):
+    record_command_problem(interaction_failure_where(interaction), error)
     original = getattr(error, "original", error)
     if isinstance(original, RateLimited):
         return
-    print(f"Error: {error}", flush=True)
     message = str(original)[:900] or "The command failed."
     if interaction.response.is_done():
         await interaction.followup.send(message, ephemeral=True)
@@ -122,8 +157,8 @@ def main():
     try:
         runtime["db"] = DatabaseManager()
     except Exception as exc:
-        print(f"Database not available: {exc}")
-        print("The bot will start without Secret Santa commands until the database is reachable.")
+        report_failure("database startup", exc)
+        logger.warning("The bot will start without Secret Santa commands until the database is reachable.")
         runtime["db"] = None
     bot.db_manager = runtime["db"]
     bot.run(TOKEN)
