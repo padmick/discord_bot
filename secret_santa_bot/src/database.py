@@ -11,7 +11,8 @@ from psycopg2.pool import ThreadedConnectionPool
 
 EVENT_FIELDS = (
     "id, guild_id, name, phase, organizer_id, deadline, "
-    "last_profile_reminder, last_shipping_reminder"
+    "last_profile_reminder, last_shipping_reminder, "
+    "profile_reminders, shipping_reminders, reminder_interval_days, shipping_lead_days"
 )
 
 
@@ -21,15 +22,13 @@ def _qualified(columns: str, table: str) -> str:
 
 
 PARTICIPANT_FIELDS = (
-    "event_id, user_id, name, wishlist, address, do_not_gift, "
-    "shirt_size, notes, digital_only"
+    "event_id, user_id, name, wishlist, address, do_not_gift, notes, digital_only"
 )
 PROFILE_FIELDS = {
     "name",
     "wishlist",
     "address",
     "do_not_gift",
-    "shirt_size",
     "notes",
     "digital_only",
 }
@@ -39,6 +38,10 @@ EVENT_UPDATE_FIELDS = {
     "name",
     "last_profile_reminder",
     "last_shipping_reminder",
+    "profile_reminders",
+    "shipping_reminders",
+    "reminder_interval_days",
+    "shipping_lead_days",
 }
 
 
@@ -370,9 +373,15 @@ class DatabaseManager:
             """
         )
         cur.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")
-        if int(cur.fetchone()["version"]) >= 1:
-            return None
+        version = int(cur.fetchone()["version"])
+        legacy_count = None
+        if version < 1:
+            legacy_count = self._migrate_v1(cur)
+        if self._schema_version(cur) < 2:
+            self._migrate_v2(cur)
+        return legacy_count
 
+    def _migrate_v1(self, cur) -> int | None:
         legacy_count = None
         participant_columns = self._column_names(cur, "participants")
         if participant_columns and "event_id" not in participant_columns:
@@ -394,6 +403,10 @@ class DatabaseManager:
                 deadline DATE,
                 last_profile_reminder DATE,
                 last_shipping_reminder DATE,
+                profile_reminders BOOLEAN NOT NULL DEFAULT TRUE,
+                shipping_reminders BOOLEAN NOT NULL DEFAULT TRUE,
+                reminder_interval_days INTEGER NOT NULL DEFAULT 7,
+                shipping_lead_days INTEGER NOT NULL DEFAULT 3,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT events_phase_check CHECK (phase IN ('signup', 'locked', 'drawn', 'done'))
             )
@@ -416,7 +429,6 @@ class DatabaseManager:
                 wishlist TEXT,
                 address TEXT,
                 do_not_gift TEXT,
-                shirt_size TEXT,
                 notes TEXT,
                 digital_only BOOLEAN NOT NULL DEFAULT FALSE,
                 UNIQUE (event_id, user_id)
@@ -451,6 +463,38 @@ class DatabaseManager:
         )
         cur.execute("INSERT INTO schema_migrations (version) VALUES (1)")
         return legacy_count
+
+    def _migrate_v2(self, cur) -> None:
+        cur.execute("ALTER TABLE participants DROP COLUMN IF EXISTS shirt_size")
+        cur.execute(
+            """
+            ALTER TABLE events
+            ADD COLUMN IF NOT EXISTS profile_reminders BOOLEAN NOT NULL DEFAULT TRUE
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE events
+            ADD COLUMN IF NOT EXISTS shipping_reminders BOOLEAN NOT NULL DEFAULT TRUE
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE events
+            ADD COLUMN IF NOT EXISTS reminder_interval_days INTEGER NOT NULL DEFAULT 7
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE events
+            ADD COLUMN IF NOT EXISTS shipping_lead_days INTEGER NOT NULL DEFAULT 3
+            """
+        )
+        cur.execute("INSERT INTO schema_migrations (version) VALUES (2)")
+
+    def _schema_version(self, cur) -> int:
+        cur.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")
+        return int(cur.fetchone()["version"])
 
     @staticmethod
     def _column_names(cur, table: str) -> set[str]:

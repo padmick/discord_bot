@@ -18,7 +18,7 @@ from services import (
     resolve_dm_events,
 )
 from utils import log_event, report_failure
-from views import ProfileView, ReplyView
+from views import NotificationSettingsView, ProfileView, ReplyView
 
 INFO_TEXT = "\n".join(
     [
@@ -77,6 +77,7 @@ class SecretSantaCog(commands.Cog):
 
     @tasks.loop(hours=24)
     async def daily_reminders(self):
+        """Check once a day. Each event sends only on the organizer's interval."""
         today = date.today()
         targets = await self.run(self.service.select_reminders, today)
         marked: set[tuple[int, str]] = set()
@@ -324,6 +325,26 @@ class SecretSantaCog(commands.Cog):
             return
         result = await self.run(self.service.set_gift_status, event["guild_id"], str(ctx.author.id), status)
         await _say(ctx, result.message)
+
+    @commands.hybrid_command(name="settings", help="Choose reminder notifications and how often they send")
+    @commands.guild_only()
+    async def settings(self, ctx):
+        """Choose reminder notifications and how often they send."""
+        result = await self.run(
+            self.service.notification_settings,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+        )
+        if not result.ok:
+            await _say(ctx, result.message)
+            return
+        await _say(
+            ctx,
+            result.message,
+            view=NotificationSettingsView(self, str(ctx.guild.id)),
+            ephemeral=ctx.interaction is not None,
+        )
 
     @commands.hybrid_command(name="remind", help="DM participants who still need a profile")
     @commands.guild_only()

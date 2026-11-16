@@ -76,10 +76,9 @@ class ProfileModal(discord.ui.Modal, title="Secret Santa profile"):
         self.user_id = user_id
         self.wishlist = _field("Wishlist", profile.get("wishlist"), paragraph=True, limit=1000)
         self.do_not_gift = _field("Do not gift", profile.get("do_not_gift"), limit=500)
-        self.shirt_size = _field("Shirt size", profile.get("shirt_size"), limit=50)
         self.notes = _field("Notes", profile.get("notes"), paragraph=True, limit=500)
         self.address = _field("Address, blank if digital", profile.get("address"), paragraph=True, limit=1000)
-        for item in (self.wishlist, self.do_not_gift, self.shirt_size, self.notes, self.address):
+        for item in (self.wishlist, self.do_not_gift, self.notes, self.address):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -94,7 +93,6 @@ class ProfileModal(discord.ui.Modal, title="Secret Santa profile"):
                 self.user_id,
                 wishlist=self.wishlist.value,
                 do_not_gift=self.do_not_gift.value,
-                shirt_size=self.shirt_size.value,
                 notes=self.notes.value,
                 address=self.address.value,
             )
@@ -169,7 +167,93 @@ class ProfileView(discord.ui.View):
         )
 
 
-def _field(label: str, value, *, paragraph: bool = False, limit: int) -> discord.ui.TextInput:
+class NotificationSettingsModal(discord.ui.Modal, title="Reminder settings"):
+    def __init__(self, cog, guild_id: str, settings: dict):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = guild_id
+        self.profile_reminders = _field(
+            "Profile reminders on/off",
+            "on" if settings.get("profile_reminders", True) else "off",
+            limit=5,
+            required=True,
+        )
+        self.shipping_reminders = _field(
+            "Shipping reminders on/off",
+            "on" if settings.get("shipping_reminders", True) else "off",
+            limit=5,
+            required=True,
+        )
+        self.interval_days = _field(
+            "Days between reminders",
+            str(settings.get("reminder_interval_days", 7)),
+            limit=2,
+            required=True,
+        )
+        self.lead_days = _field(
+            "Days before deadline",
+            str(settings.get("shipping_lead_days", 3)),
+            limit=2,
+            required=True,
+        )
+        for item in (self.profile_reminders, self.shipping_reminders, self.interval_days, self.lead_days):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await self.cog.run(
+                self.cog.service.update_notification_settings,
+                self.guild_id,
+                str(interaction.user.id),
+                _interaction_is_admin(interaction),
+                self.profile_reminders.value,
+                self.shipping_reminders.value,
+                self.interval_days.value,
+                self.lead_days.value,
+            )
+            await interaction.followup.send(result.message, ephemeral=True)
+        except Exception as exc:
+            report_failure(f"notification settings guild {self.guild_id}", exc)
+            await interaction.followup.send("The notification settings could not be saved.", ephemeral=True)
+
+    async def on_error(self, interaction, error, /) -> None:
+        await report_component_failure(f"notification settings guild {self.guild_id}", interaction, error)
+
+
+class NotificationSettingsView(discord.ui.View):
+    def __init__(self, cog, guild_id: str):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="Edit notifications", style=discord.ButtonStyle.primary)
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        del button
+        result = await self.cog.run(
+            self.cog.service.notification_settings,
+            self.guild_id,
+            str(interaction.user.id),
+            _interaction_is_admin(interaction),
+        )
+        if not result.ok:
+            await interaction.response.send_message(result.message, ephemeral=True)
+            return
+        await interaction.response.send_modal(
+            NotificationSettingsModal(self.cog, self.guild_id, result.data or {})
+        )
+
+    async def on_error(self, interaction, error, item, /) -> None:
+        del item
+        await report_component_failure(f"notification settings guild {self.guild_id}", interaction, error)
+
+
+def _interaction_is_admin(interaction) -> bool:
+    permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
+    return bool(permissions and permissions.administrator)
+
+
+def _field(label: str, value, *, paragraph: bool = False, limit: int, required: bool = False) -> discord.ui.TextInput:
     style = discord.TextStyle.paragraph if paragraph else discord.TextStyle.short
     default = (value or "").strip() or None
     return discord.ui.TextInput(
@@ -177,5 +261,5 @@ def _field(label: str, value, *, paragraph: bool = False, limit: int) -> discord
         style=style,
         default=default,
         max_length=limit,
-        required=False,
+        required=required,
     )

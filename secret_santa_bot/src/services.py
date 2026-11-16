@@ -20,10 +20,11 @@ FIELD_LIMITS = {
     "wishlist": 1000,
     "address": 1000,
     "do_not_gift": 500,
-    "shirt_size": 50,
     "notes": 500,
 }
-SHIPPING_REMINDER_WINDOW = 3
+DEFAULT_REMINDER_INTERVAL_DAYS = 7
+DEFAULT_SHIPPING_LEAD_DAYS = 3
+MAX_REMINDER_DAYS = 30
 
 
 @dataclass
@@ -470,10 +471,61 @@ class EventService:
     def open_participations(self, user_id: str) -> list[dict[str, Any]]:
         return self.db.list_open_participations(str(user_id))
 
+    def notification_settings(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        return success(_settings_message(event), **_settings_payload(event))
+
+    def update_notification_settings(
+        self,
+        guild_id: str,
+        actor_id: str,
+        is_admin: bool,
+        profile_reminders: str,
+        shipping_reminders: str,
+        reminder_interval_days: str,
+        shipping_lead_days: str,
+    ) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        profile_on = parse_toggle(profile_reminders)
+        shipping_on = parse_toggle(shipping_reminders)
+        if profile_on is None or shipping_on is None:
+            return failure("bad_setting", "Use on or off for each reminder.")
+        try:
+            interval = int(str(reminder_interval_days).strip())
+            lead = int(str(shipping_lead_days).strip())
+        except (TypeError, ValueError):
+            return failure("bad_setting", "Reminder timing must be a whole number of days.")
+        if not 1 <= interval <= MAX_REMINDER_DAYS:
+            return failure("bad_setting", f"Days between reminders must be from 1 to {MAX_REMINDER_DAYS}.")
+        if not 0 <= lead <= MAX_REMINDER_DAYS:
+            return failure(
+                "bad_setting",
+                f"Shipping reminders can start from 0 to {MAX_REMINDER_DAYS} days before the deadline.",
+            )
+        self.db.update_event(
+            event["id"],
+            profile_reminders=profile_on,
+            shipping_reminders=shipping_on,
+            reminder_interval_days=interval,
+            shipping_lead_days=lead,
+        )
+        updated = self.db.get_event(event["id"])
+        return success("Notification settings saved.\n" + _settings_message(updated), **_settings_payload(updated))
+
     def select_reminders(self, today: date) -> list[dict[str, Any]]:
         selected = []
         for event in self.db.list_actionable_events():
-            if event["phase"] in (SIGNUP, LOCKED) and event["last_profile_reminder"] != today:
+            interval = int(event.get("reminder_interval_days") or DEFAULT_REMINDER_INTERVAL_DAYS)
+            profile_due = (
+                event.get("profile_reminders", True)
+                and event["phase"] in (SIGNUP, LOCKED)
+                and reminder_interval_elapsed(event.get("last_profile_reminder"), today, interval)
+            )
+            if profile_due:
                 for person in self.db.list_participants(event["id"]):
                     missing = missing_fields(person)
                     if missing:
@@ -487,11 +539,13 @@ class EventService:
                             }
                         )
             deadline = event["deadline"]
+            lead = int(event.get("shipping_lead_days") if event.get("shipping_lead_days") is not None else DEFAULT_SHIPPING_LEAD_DAYS)
             due = (
-                event["phase"] == DRAWN
+                event.get("shipping_reminders", True)
+                and event["phase"] == DRAWN
                 and deadline is not None
-                and shipping_reminder_due(deadline, today)
-                and event["last_shipping_reminder"] != today
+                and shipping_reminder_due(deadline, today, lead)
+                and reminder_interval_elapsed(event.get("last_shipping_reminder"), today, interval)
             )
             if due:
                 for pairing in self.db.list_pairings(event["id"]):
@@ -567,7 +621,6 @@ class EventService:
             "wishlist": receiver.get("wishlist") or "",
             "address": receiver.get("address") or "",
             "do_not_gift": receiver.get("do_not_gift") or "",
-            "shirt_size": receiver.get("shirt_size") or "",
             "notes": receiver.get("notes") or "",
             "digital_only": bool(receiver.get("digital_only")),
         }
@@ -635,7 +688,6 @@ def _profile_message(participant: dict[str, Any]) -> str:
             f"Wishlist: {participant.get('wishlist') or 'not set'}",
             f"Address: {participant.get('address') or 'not set'}",
             f"Do not gift: {participant.get('do_not_gift') or 'not set'}",
-            f"Shirt size: {participant.get('shirt_size') or 'not set'}",
             f"Notes: {participant.get('notes') or 'not set'}",
             f"Digital gift: {digital}",
         ]
@@ -653,15 +705,57 @@ def match_text(receiver: dict[str, Any]) -> str:
             f"Recipient: {receiver['name']}",
             f"Wishlist: {receiver.get('wishlist') or 'No wishlist set'}",
             f"Do not gift: {receiver.get('do_not_gift') or 'not set'}",
-            f"Shirt size: {receiver.get('shirt_size') or 'not set'}",
             f"Notes: {receiver.get('notes') or 'not set'}",
             f"Delivery: {address}",
         ]
     )
 
 
-def shipping_reminder_due(deadline: date, today: date) -> bool:
-    return 0 <= (deadline - today).days <= SHIPPING_REMINDER_WINDOW
+def shipping_reminder_due(deadline: date, today: date, lead_days: int) -> bool:
+    return 0 <= (deadline - today).days <= lead_days
+
+
+def reminder_interval_elapsed(last: date | None, today: date, interval_days: int) -> bool:
+    if last is None:
+        return True
+    return (today - last).days >= interval_days
+
+
+def parse_toggle(value: str) -> bool | None:
+    cleaned = str(value or "").strip().lower()
+    if cleaned in {"on", "yes", "true", "1"}:
+        return True
+    if cleaned in {"off", "no", "false", "0"}:
+        return False
+    return None
+
+
+def _settings_payload(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "profile_reminders": bool(event.get("profile_reminders", True)),
+        "shipping_reminders": bool(event.get("shipping_reminders", True)),
+        "reminder_interval_days": int(event.get("reminder_interval_days") or DEFAULT_REMINDER_INTERVAL_DAYS),
+        "shipping_lead_days": int(
+            event.get("shipping_lead_days")
+            if event.get("shipping_lead_days") is not None
+            else DEFAULT_SHIPPING_LEAD_DAYS
+        ),
+    }
+
+
+def _settings_message(event: dict[str, Any]) -> str:
+    settings = _settings_payload(event)
+    profile = "on" if settings["profile_reminders"] else "off"
+    shipping = "on" if settings["shipping_reminders"] else "off"
+    return "\n".join(
+        [
+            f"Profile reminders: {profile}.",
+            f"Shipping reminders: {shipping}.",
+            f"The bot checks once a day and sends a reminder after {settings['reminder_interval_days']} day(s).",
+            f"Shipping reminders start {settings['shipping_lead_days']} day(s) before the deadline.",
+            "s!remind still sends a profile reminder immediately.",
+        ]
+    )
 
 
 def assignment_text(note: dict[str, Any]) -> str:
@@ -670,7 +764,6 @@ def assignment_text(note: dict[str, Any]) -> str:
         "wishlist": note.get("wishlist"),
         "address": note.get("address"),
         "do_not_gift": note.get("do_not_gift"),
-        "shirt_size": note.get("shirt_size"),
         "notes": note.get("notes"),
         "digital_only": note.get("digital_only"),
     }
