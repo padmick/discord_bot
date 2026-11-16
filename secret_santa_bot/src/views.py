@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import discord
 
+from present import to_embed
 from utils import report_failure
 
 
@@ -212,7 +213,14 @@ class NotificationSettingsModal(discord.ui.Modal, title="Reminder settings"):
                 self.interval_days.value,
                 self.lead_days.value,
             )
-            await interaction.followup.send(result.message, ephemeral=True)
+            if result.ok and result.card is not None:
+                await interaction.followup.send(
+                    "Notification settings saved.",
+                    embed=to_embed(result.card),
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(result.message, ephemeral=True)
         except Exception as exc:
             report_failure(f"notification settings guild {self.guild_id}", exc)
             await interaction.followup.send("The notification settings could not be saved.", ephemeral=True)
