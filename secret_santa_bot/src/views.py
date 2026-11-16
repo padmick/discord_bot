@@ -4,6 +4,22 @@ from __future__ import annotations
 
 import discord
 
+from utils import report_failure
+
+
+async def report_component_failure(component: str, interaction, error: BaseException) -> None:
+    """Log a button or form failure and tell the person the action failed."""
+    report_failure(component, error)
+    if interaction is None:
+        return
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send("That action failed.", ephemeral=True)
+        else:
+            await interaction.response.send_message("That action failed.", ephemeral=True)
+    except Exception as exc:
+        report_failure(f"{component} response", exc)
+
 
 class ReplyButton(discord.ui.Button):
     def __init__(self, direction: str):
@@ -27,6 +43,10 @@ class ReplyView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(ReplyButton(direction))
 
+    async def on_error(self, interaction, error, item, /) -> None:
+        del item
+        await report_component_failure("ReplyView", interaction, error)
+
 
 class ReplyModal(discord.ui.Modal, title="Anonymous reply"):
     body = discord.ui.TextInput(
@@ -43,6 +63,9 @@ class ReplyModal(discord.ui.Modal, title="Anonymous reply"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.deliver_anonymous(interaction, self.direction, str(self.body.value))
+
+    async def on_error(self, interaction, error, /) -> None:
+        await report_component_failure(f"reply form {self.direction}", interaction, error)
 
 
 class ProfileModal(discord.ui.Modal, title="Secret Santa profile"):
@@ -78,9 +101,16 @@ class ProfileModal(discord.ui.Modal, title="Secret Santa profile"):
             if result.ok and result.data and result.data.get("notify_gifter_id"):
                 await self.cog.notify_wishlist(result.data)
             await interaction.followup.send(result.message, ephemeral=True)
-        except Exception:
+        except Exception as exc:
+            report_failure(f"profile form guild {self.guild_id} user {self.user_id}", exc)
             await interaction.followup.send("The profile could not be saved.", ephemeral=True)
-            raise
+
+    async def on_error(self, interaction, error, /) -> None:
+        await report_component_failure(
+            f"profile form guild {self.guild_id} user {self.user_id}",
+            interaction,
+            error,
+        )
 
 
 class ProfileView(discord.ui.View):
@@ -129,6 +159,14 @@ class ProfileView(discord.ui.View):
         else:
             text = "Digital gift is off. An address is required before the draw."
         await interaction.response.send_message(text, ephemeral=True)
+
+    async def on_error(self, interaction, error, item, /) -> None:
+        del item
+        await report_component_failure(
+            f"ProfileView guild {self.guild_id} user {self.user_id}",
+            interaction,
+            error,
+        )
 
 
 def _field(label: str, value, *, paragraph: bool = False, limit: int) -> discord.ui.TextInput:

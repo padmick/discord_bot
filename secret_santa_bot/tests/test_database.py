@@ -40,6 +40,26 @@ def test_guilds_stay_isolated_across_cancel_and_finish(db):
     assert db.get_open_event("guild-b")["id"] == second["id"]
 
 
+def test_open_participations_use_the_event_columns(db):
+    """events and participants both have id and name, so the join must name the event columns."""
+    first = db.create_event("guild-a", "Alpha", "org-a")
+    second = db.create_event("guild-b", "Beta", "org-b")
+    finished = db.create_event("guild-c", "Old", "org-c")
+    db.add_participant(first["id"], "ada", "Ada")
+    db.add_participant(second["id"], "ada", "Ada")
+    db.add_participant(second["id"], "bea", "Bea")
+    db.add_participant(finished["id"], "ada", "Ada")
+    db.update_event(finished["id"], phase="done")
+
+    rows = db.list_open_participations("ada")
+    assert [(row["id"], row["name"], row["guild_id"]) for row in rows] == [
+        (first["id"], "Alpha", "guild-a"),
+        (second["id"], "Beta", "guild-b"),
+    ]
+    assert db.list_open_participations("bea") == [second]
+    assert db.list_open_participations("nobody") == []
+
+
 def test_second_open_event_in_one_guild_fails(db):
     db.create_event("guild-a", "One", "org")
     with pytest.raises(psycopg2.IntegrityError):
