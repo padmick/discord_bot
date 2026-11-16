@@ -8,12 +8,12 @@ Prefix commands use `s!`. The same actions are available as slash commands after
 
 - One open event per server, with signup, locked, drawn, and done phases
 - An organizer who runs the event and is not in the draw unless they join
-- Wishlists, do-not-gift notes, shirt size, notes, and an optional shipping address
+- Wishlists, do-not-gift notes, notes, and an optional shipping address
 - Digital gifts that do not require an address
 - Mutual exclusions and a redraw when someone leaves after the draw
 - Anonymous messages with a Reply button
 - Gift progress: bought, shipped, received
-- Daily reminders for missing profiles and for gifts that are not shipped near the deadline
+- Reminder settings the organizer edits in a form. The bot checks once a day and sends after the chosen number of days, weekly by default.
 
 ## Prerequisites
 
@@ -67,7 +67,8 @@ Server management (organizer or a server admin):
 - `s!finish` - Archive a drawn event so another can be created.
 - `s!cancel` - Delete this server's open event.
 - `s!remove @member` - Remove someone. After the draw, the seat is redrawn.
-- `s!remind` - DM people who still need a wishlist or address.
+- `s!settings` - Choose profile and shipping reminders, the days between them, and how early shipping reminders start.
+- `s!remind` - DM people who still need a wishlist or address right now.
 - `s!broadcast <message>` - DM every participant.
 - `s!logs` - DM the latest log lines.
 - `s!ratelimit on|off|commands <n>|window <seconds>|status`
@@ -75,7 +76,7 @@ Server management (organizer or a server admin):
 Participants:
 
 - `s!join` / `s!leave`
-- `s!profile` - Private form for wishlist, notes, shirt size, address, and the digital-gift toggle.
+- `s!profile` - Private form for wishlist, notes, address, and the digital-gift toggle.
 - `s!setwishlist <text>` / `s!setaddress <text>` - In a server channel, the command message is deleted.
 - `s!myinfo` - DM your profile.
 - `s!exclude @member` / `s!unexclude @member` - Keep two people from being assigned either way.
@@ -90,7 +91,7 @@ Participants:
 
 1. An organizer creates the event with `s!create`.
 2. Participants join and fill in a wishlist. A shipping address is required unless the gift is digital.
-3. Optional: lock signup, set a deadline, and add exclusions.
+3. Optional: lock signup, set a deadline, add exclusions, and set reminder timing with `s!settings`.
 4. `s!start` writes a draw only when every profile is complete and a valid derangement exists.
 5. Each person is DMed their recipient. The organizer does not receive the full list.
 6. Pairs can message anonymously and mark the gift bought, shipped, and received.

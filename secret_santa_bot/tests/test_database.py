@@ -156,3 +156,85 @@ def test_legacy_tables_are_renamed_and_left_in_place(postgres_url):
         assert manager.ping() is True
     finally:
         manager.close()
+
+
+def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
+    connection = psycopg2.connect(postgres_url)
+    connection.autocommit = True
+    with connection.cursor() as cursor:
+        cursor.execute("DROP SCHEMA public CASCADE")
+        cursor.execute("CREATE SCHEMA public")
+        cursor.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cursor.execute("INSERT INTO schema_migrations (version) VALUES (1)")
+        cursor.execute(
+            """
+            CREATE TABLE events (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                phase TEXT NOT NULL DEFAULT 'signup',
+                organizer_id TEXT NOT NULL,
+                deadline DATE,
+                last_profile_reminder DATE,
+                last_shipping_reminder DATE
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE participants (
+                id SERIAL PRIMARY KEY,
+                event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                wishlist TEXT,
+                address TEXT,
+                do_not_gift TEXT,
+                shirt_size TEXT,
+                notes TEXT,
+                digital_only BOOLEAN NOT NULL DEFAULT FALSE,
+                UNIQUE (event_id, user_id)
+            )
+            """
+        )
+        cursor.execute("INSERT INTO events (guild_id, name, organizer_id) VALUES ('guild', 'Party', 'org') RETURNING id")
+        event_id = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            INSERT INTO participants (event_id, user_id, name, wishlist, shirt_size)
+            VALUES (%s, 'ada', 'Ada', 'books', 'M')
+            """,
+            (event_id,),
+        )
+        cursor.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'participants'
+            """
+        )
+        assert "shirt_size" in {row[0] for row in cursor.fetchall()}
+    connection.close()
+
+    manager = DatabaseManager(postgres_url)
+    try:
+        person = manager.get_participant(event_id, "ada")
+        assert person["wishlist"] == "books"
+        assert person["name"] == "Ada"
+        assert "shirt_size" not in person
+        event = manager.get_open_event("guild")
+        assert event["profile_reminders"] is True
+        assert event["shipping_reminders"] is True
+        assert event["reminder_interval_days"] == 7
+        assert event["shipping_lead_days"] == 3
+    finally:
+        manager.close()
+
+    again = DatabaseManager(postgres_url)
+    again.close()

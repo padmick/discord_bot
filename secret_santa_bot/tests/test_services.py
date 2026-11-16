@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 from bot import health_payload
 from services import (
@@ -6,7 +7,10 @@ from services import (
     RateLimiter,
     anonymous_message_log,
     format_help,
+    match_text,
+    reminder_interval_elapsed,
     resolve_dm_events,
+    shipping_reminder_due,
     should_delete_channel_text,
 )
 
@@ -35,6 +39,10 @@ class FakeDB:
             "deadline": None,
             "last_profile_reminder": None,
             "last_shipping_reminder": None,
+            "profile_reminders": True,
+            "shipping_reminders": True,
+            "reminder_interval_days": 7,
+            "shipping_lead_days": 3,
         }
         return dict(self.events[event_id])
 
@@ -74,7 +82,6 @@ class FakeDB:
                 "wishlist": None,
                 "address": None,
                 "do_not_gift": None,
-                "shirt_size": None,
                 "notes": None,
                 "digital_only": False,
             }
@@ -426,7 +433,8 @@ def test_reminder_selection_for_profiles_and_shipments():
     event_id = database.get_open_event("guild")["id"]
     svc.mark_reminded(event_id, "profile", today)
     assert svc.select_reminders(today) == []
-    assert any(item["user_id"] == "late" for item in svc.select_reminders(today + timedelta(days=1)))
+    assert svc.select_reminders(today + timedelta(days=1)) == []
+    assert any(item["user_id"] == "late" for item in svc.select_reminders(today + timedelta(days=7)))
 
     svc.set_text_field("guild", "late", "wishlist", "hat", False)
     svc.set_text_field("guild", "late", "address", "1 Road", False)
@@ -448,7 +456,125 @@ def test_reminder_selection_for_profiles_and_shipments():
     assert svc.set_deadline("guild", "org", False, (today + timedelta(days=1)).isoformat()).ok
     svc.mark_reminded(event_id, "shipping", today)
     assert [item for item in svc.select_reminders(today) if item["kind"] == "shipping"] == []
-    assert svc.select_reminders(today + timedelta(days=1))
+    assert [item for item in svc.select_reminders(today + timedelta(days=1)) if item["kind"] == "shipping"] == []
+    assert svc.set_deadline("guild", "org", False, (today + timedelta(days=7)).isoformat()).ok
+    assert {item["user_id"] for item in svc.select_reminders(today + timedelta(days=7)) if item["kind"] == "shipping"} == {
+        "late",
+        "digital",
+    }
+
+
+def test_organizer_controls_reminder_cadence_and_toggles():
+    svc, database = service()
+    today = date(2026, 12, 1)
+    assert reminder_interval_elapsed(None, today, 7) is True
+    assert reminder_interval_elapsed(today, today, 7) is False
+    assert reminder_interval_elapsed(today - timedelta(days=6), today, 7) is False
+    assert reminder_interval_elapsed(today - timedelta(days=7), today, 7) is True
+    assert shipping_reminder_due(today + timedelta(days=2), today, 1) is False
+    assert shipping_reminder_due(today + timedelta(days=1), today, 1) is True
+    assert shipping_reminder_due(today - timedelta(days=1), today, 3) is False
+
+    svc.create_event("guild", "org", "Party")
+    svc.join("guild", "late", "Late")
+    denied = svc.update_notification_settings("guild", "late", False, "off", "off", "14", "1")
+    assert denied.code == "forbidden"
+    assert svc.update_notification_settings("guild", "org", False, "maybe", "on", "7", "3").code == "bad_setting"
+    assert svc.update_notification_settings("guild", "org", False, "on", "on", "0", "3").code == "bad_setting"
+    assert svc.update_notification_settings("guild", "org", False, "on", "on", "7", "31").code == "bad_setting"
+    assert svc.update_notification_settings("guild", "org", False, "on", "on", "weekly", "3").code == "bad_setting"
+
+    saved = svc.update_notification_settings("guild", "org", False, "off", "yes", "14", "1")
+    assert saved.ok
+    assert "Profile reminders: off." in saved.message
+    assert "14 day(s)" in saved.message
+    event = database.get_open_event("guild")
+    assert event["profile_reminders"] is False
+    assert event["shipping_reminders"] is True
+    assert event["reminder_interval_days"] == 14
+    assert event["shipping_lead_days"] == 1
+    assert svc.select_reminders(today) == []
+
+    assert svc.update_notification_settings("guild", "org", False, "on", "on", "1", "1").ok
+    assert {item["user_id"] for item in svc.select_reminders(today)} == {"late"}
+    event_id = event["id"]
+    svc.mark_reminded(event_id, "profile", today)
+    assert any(item["user_id"] == "late" for item in svc.select_reminders(today + timedelta(days=1)))
+
+    ready_participant(svc, "guild", "ready", "Ready")
+    assert svc.set_text_field("guild", "late", "wishlist", "hat", False).ok
+    assert svc.set_text_field("guild", "late", "address", "1 Road", False).ok
+    assert svc.set_deadline("guild", "org", False, (today + timedelta(days=2)).isoformat()).ok
+    assert svc.start("guild", "org", False).ok
+    assert [item for item in svc.select_reminders(today) if item["kind"] == "shipping"] == []
+    assert svc.set_deadline("guild", "org", False, today.isoformat()).ok
+    shipping = {item["user_id"] for item in svc.select_reminders(today) if item["kind"] == "shipping"}
+    assert shipping == {"late", "ready"}
+    assert svc.update_notification_settings("guild", "org", False, "on", "off", "1", "1").ok
+    assert [item for item in svc.select_reminders(today) if item["kind"] == "shipping"] == []
+
+
+def test_profiles_no_longer_store_shirt_size():
+    svc, _database = service()
+    svc.create_event("guild", "org", "Party")
+    ready_participant(svc, "guild", "a", "Ada")
+    assert svc.update_profile("guild", "a", shirt_size="M").code == "bad_field"
+    info = svc.my_info("guild", "a")
+    assert "shirt" not in info.message.lower()
+    assert svc.set_deadline("guild", "org", False, "2026-12-20").ok
+    ready_participant(svc, "guild", "b", "Bea")
+    assert svc.start("guild", "org", False).ok
+    match = svc.match_info("guild", "a")
+    assert "shirt" not in match.message.lower()
+    assert "Shirt" not in match_text({"name": "Bea", "wishlist": "books", "digital_only": False})
+
+
+async def test_notification_form_saves_the_organizer_choices():
+    from views import NotificationSettingsModal
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    svc.join("guild", "late", "Late")
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+    class Response:
+        async def defer(self, ephemeral=False):
+            del ephemeral
+
+    class Followup:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+
+    current = svc.notification_settings("guild", "org", False)
+    modal = NotificationSettingsModal(Cog(), "guild", current.data)
+    modal.profile_reminders._value = "off"
+    modal.shipping_reminders._value = "on"
+    modal.interval_days._value = "10"
+    modal.lead_days._value = "0"
+    saved = SimpleNamespace(user=SimpleNamespace(id="org"), response=Response(), followup=Followup())
+    await modal.on_submit(saved)
+    event = database.get_open_event("guild")
+    assert event["profile_reminders"] is False
+    assert event["shipping_reminders"] is True
+    assert event["reminder_interval_days"] == 10
+    assert event["shipping_lead_days"] == 0
+    assert saved.followup.messages[0].startswith("Notification settings saved.")
+
+    rejected = SimpleNamespace(user=SimpleNamespace(id="late"), response=Response(), followup=Followup())
+    modal.profile_reminders._value = "on"
+    await modal.on_submit(rejected)
+    assert database.get_open_event("guild")["profile_reminders"] is False
+    assert "organizer" in rejected.followup.messages[0].lower()
 
 
 def test_messages_exclusions_and_help_cover_the_remaining_rules():
