@@ -112,13 +112,54 @@ class ProfileModal(discord.ui.Modal, title="Secret Santa profile"):
         )
 
 
+class PastMatchSelect(discord.ui.UserSelect):
+    """Server members, including people who have not joined this Secret Santa."""
+
+    def __init__(self):
+        super().__init__(
+            placeholder="Someone you were paired with before",
+            min_values=1,
+            max_values=10,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, ProfileView):
+            await interaction.response.send_message("This menu is not available right now.", ephemeral=True)
+            return
+        if str(interaction.user.id) != view.user_id:
+            await interaction.response.send_message(
+                "This menu belongs to the person who opened the profile.",
+                ephemeral=True,
+            )
+            return
+        people = []
+        for member in self.values:
+            if getattr(member, "bot", False):
+                continue
+            people.append((str(member.id), getattr(member, "display_name", "") or ""))
+        if not people:
+            await interaction.response.send_message("Pick a person. Bots are not in the draw.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await view.cog.run(
+            view.cog.service.skip_past_matches,
+            view.guild_id,
+            view.user_id,
+            people,
+        )
+        await interaction.followup.send(result.message, ephemeral=True)
+
+
 class ProfileView(discord.ui.View):
-    def __init__(self, cog, guild_id: str, user_id: str, digital_only: bool):
+    def __init__(self, cog, guild_id: str, user_id: str, digital_only: bool, in_guild: bool = False):
         super().__init__(timeout=180)
         self.cog = cog
         self.guild_id = guild_id
         self.user_id = user_id
         self.digital_only = digital_only
+        if in_guild:
+            self.add_item(PastMatchSelect())
 
     async def _owner(self, interaction: discord.Interaction) -> bool:
         if str(interaction.user.id) == self.user_id:

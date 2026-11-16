@@ -5,6 +5,7 @@ from datetime import date
 from cogs.secret_santa import CustomHelpCommand, SecretSantaCog
 from present import (
     anonymous_card,
+    profile_prompt_card,
     help_card,
     info_card,
     match_card,
@@ -55,13 +56,39 @@ def test_welcome_explains_the_event_and_neutralizes_mentions():
     text = card.text()
     assert "@everyone" not in text
     assert "Winter" in text
-    for topic in ("wishlist", "digital", "s!start", "s!message giftee", "s!gift bought", "s!reveal reveal", "s!exclude"):
+    for topic in (
+        "wishlist",
+        "digital",
+        "s!start",
+        "s!message giftee",
+        "s!gift bought",
+        "s!reveal reveal",
+        "s!exclude",
+        "have not joined",
+    ):
         assert topic in text
     assert card.title.startswith("Welcome to ")
     embed = to_embed(card)
     assert len(embed.title) <= 256
     assert all(len(field.value) <= 1024 for field in embed.fields)
     assert len(embed.fields) <= 25
+
+
+def test_profile_prompt_points_at_the_server_menu():
+    guild = profile_prompt_card(True).text().lower()
+    assert "menu" in guild
+    assert "do not have to have joined" in guild
+    direct = profile_prompt_card(False).text().lower()
+    assert "run /profile in the server" in direct
+
+
+def test_past_matches_are_grouped_with_getting_started():
+    text = help_card(
+        [("exclude", "Skip a past match"), ("gift", "Mark the gift")],
+        "s!",
+    ).text()
+    assert text.index("Getting started") < text.index("`s!exclude`") < text.index("After the draw")
+    assert text.index("`s!exclude`") < text.index("`s!gift`")
 
 
 def test_info_uses_the_same_guide_as_the_welcome():

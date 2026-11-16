@@ -234,18 +234,41 @@ class SecretSantaCog(commands.Cog):
         result = await self.run(self.service.roster, str(ctx.guild.id))
         await _show(ctx, result)
 
-    @commands.hybrid_command(name="exclude", help="Keep two people from being assigned to each other")
+    @commands.hybrid_command(
+        name="exclude",
+        aliases=["skip"],
+        help="Skip someone you were paired with before",
+    )
     @commands.guild_only()
     async def exclude(self, ctx, member: discord.Member):
-        """Keep two people from being assigned to each other."""
-        result = await self.run(self.service.exclude, str(ctx.guild.id), str(ctx.author.id), str(member.id))
+        """Skip someone you were paired with before."""
+        if member.bot:
+            await _say(ctx, "Pick a person. Bots are not in the draw.")
+            return
+        result = await self.run(
+            self.service.exclude,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            str(member.id),
+            member.display_name,
+        )
         await _show(ctx, result)
 
-    @commands.hybrid_command(name="unexclude", help="Remove an exclusion")
+    @commands.hybrid_command(
+        name="unexclude",
+        aliases=["unskip"],
+        help="Let a past match be paired with you again",
+    )
     @commands.guild_only()
     async def unexclude(self, ctx, member: discord.Member):
-        """Remove an exclusion."""
-        result = await self.run(self.service.unexclude, str(ctx.guild.id), str(ctx.author.id), str(member.id))
+        """Let a past match be paired with you again."""
+        result = await self.run(
+            self.service.unexclude,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            str(member.id),
+            member.display_name,
+        )
         await _show(ctx, result)
 
     @commands.hybrid_command(name="remove", help="Remove a participant")
@@ -263,9 +286,9 @@ class SecretSantaCog(commands.Cog):
             await self._dm_card(str(member.id), removed_card())
         await self._after_roster_change(ctx, result, "REMOVE")
 
-    @commands.hybrid_command(name="profile", help="Open the private profile form")
+    @commands.hybrid_command(name="profile", help="Open your profile and the past-match menu")
     async def profile(self, ctx):
-        """Open the private profile form."""
+        """Open your profile and the past-match menu."""
         event = await self._personal_event(ctx)
         if event is None:
             return
@@ -273,15 +296,17 @@ class SecretSantaCog(commands.Cog):
         if not info.ok:
             await _show(ctx, info)
             return
+        in_guild = ctx.guild is not None
         view = ProfileView(
             self,
             event["guild_id"],
             str(ctx.author.id),
             bool((info.data or {}).get("digital_only")),
+            in_guild=in_guild,
         )
         await _send_card(
             ctx,
-            profile_prompt_card(),
+            profile_prompt_card(in_guild),
             view=view,
             ephemeral=ctx.interaction is not None,
         )
