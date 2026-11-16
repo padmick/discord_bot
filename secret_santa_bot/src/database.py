@@ -13,6 +13,13 @@ EVENT_FIELDS = (
     "id, guild_id, name, phase, organizer_id, deadline, "
     "last_profile_reminder, last_shipping_reminder"
 )
+
+
+def _qualified(columns: str, table: str) -> str:
+    """Prefix each column so a join does not see two tables' id or name."""
+    return ", ".join(f"{table}.{name.strip()}" for name in columns.split(","))
+
+
 PARTICIPANT_FIELDS = (
     "event_id, user_id, name, wishlist, address, do_not_gift, "
     "shirt_size, notes, digital_only"
@@ -189,7 +196,7 @@ class DatabaseManager:
         def query(cur):
             cur.execute(
                 f"""
-                SELECT {EVENT_FIELDS}
+                SELECT {_qualified(EVENT_FIELDS, "events")}
                 FROM events
                 JOIN participants ON participants.event_id = events.id
                 WHERE participants.user_id = %s AND events.phase <> 'done'

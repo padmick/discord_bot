@@ -74,7 +74,7 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.BadArgument):
         await ctx.send("I couldn't read one of those values. Use `s!help` if you need the command shape.")
         return
-    print(f"Error: {error}")
+    print(f"Error: {error}", flush=True)
     await ctx.send(f"An error occurred: {str(original)[:900]}")
 
 
@@ -83,6 +83,7 @@ async def on_app_command_error(interaction, error):
     original = getattr(error, "original", error)
     if isinstance(original, RateLimited):
         return
+    print(f"Error: {error}", flush=True)
     message = str(original)[:900] or "The command failed."
     if interaction.response.is_done():
         await interaction.followup.send(message, ephemeral=True)
