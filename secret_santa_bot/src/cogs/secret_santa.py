@@ -14,6 +14,8 @@ from present import (
     announcement_card,
     anonymous_card,
     changelog_card,
+    tip_card,
+    tutorial_card,
     command_help_card,
     draw_waiting_card,
     help_card,
@@ -34,7 +36,7 @@ from services import (
     resolve_dm_events,
 )
 from utils import log_event, report_failure
-from views import NotificationSettingsView, ProfileView, ReplyView
+from views import NotificationSettingsView, ProfileView, ReplyView, TutorialView
 
 
 class RateLimited(commands.CommandError):
@@ -80,6 +82,7 @@ class SecretSantaCog(commands.Cog):
         self.rate_limiter = RateLimiter()
         self.bot.add_view(ReplyView("gifter"))
         self.bot.add_view(ReplyView("giftee"))
+        self.bot.add_view(TutorialView(0))
         self.daily_reminders.start()
 
     def cog_unload(self):
@@ -95,25 +98,44 @@ class SecretSantaCog(commands.Cog):
         raise RateLimited()
 
     async def cog_after_invoke(self, ctx):
-        await self._offer_changelog(ctx)
+        if getattr(getattr(ctx, "command", None), "name", "") == "tutorial":
+            return
+        if await self._offer_changelog(ctx):
+            return
+        if getattr(ctx, "command_failed", False):
+            return
+        await self._offer_tip(ctx)
 
     @commands.Cog.listener()
     async def on_command_completion(self, ctx):
         if getattr(ctx.command, "cog", None) is self:
             return
-        await self._offer_changelog(ctx)
+        if await self._offer_changelog(ctx):
+            return
+        await self._offer_tip(ctx)
 
-    async def _offer_changelog(self, ctx):
+    async def _offer_changelog(self, ctx) -> bool:
         try:
             show = await self.run(self.service.claim_changelog, str(ctx.author.id))
         except Exception as error:
             report_failure("changelog", error)
-            return
-        if show:
-            await self._show_changelog(ctx)
+            return False
+        if not show:
+            return False
+        await self._show_popup(ctx, changelog_card())
+        return True
 
-    async def _show_changelog(self, ctx):
-        card = changelog_card()
+    async def _offer_tip(self, ctx):
+        command_name = getattr(getattr(ctx, "command", None), "name", "")
+        try:
+            tip_id = await self.run(self.service.claim_command_tip, str(ctx.author.id), command_name)
+        except Exception as error:
+            report_failure("tip", error)
+            return
+        if tip_id:
+            await self._show_popup(ctx, tip_card(tip_id))
+
+    async def _show_popup(self, ctx, card: Card):
         interaction = getattr(ctx, "interaction", None)
         try:
             if interaction is not None:
@@ -402,6 +424,16 @@ class SecretSantaCog(commands.Cog):
         """See what has been added recently."""
         await self.run(self.service.claim_changelog, str(ctx.author.id))
         await _send_card(ctx, changelog_card(), ephemeral=getattr(ctx, "interaction", None) is not None)
+
+    @commands.hybrid_command(name="tutorial", help="Walk through the commands one page at a time")
+    async def tutorial(self, ctx):
+        """Walk through the commands one page at a time."""
+        await _send_card(
+            ctx,
+            tutorial_card(0),
+            view=TutorialView(0),
+            ephemeral=getattr(ctx, "interaction", None) is not None,
+        )
 
     async def _feedback(self, ctx, kind: str, text: str):
         guild_id = str(ctx.guild.id) if ctx.guild is not None else ""

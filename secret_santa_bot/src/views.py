@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import discord
 
-from present import to_embed
+from present import to_embed, tutorial_card, tutorial_page_count, tutorial_page_from_footer
 from utils import report_failure
 
 
@@ -20,6 +20,42 @@ async def report_component_failure(component: str, interaction, error: BaseExcep
             await interaction.response.send_message("That action failed.", ephemeral=True)
     except Exception as exc:
         report_failure(f"{component} response", exc)
+
+
+class TutorialButton(discord.ui.Button):
+    def __init__(self, kind: str, disabled: bool):
+        super().__init__(
+            label="Back" if kind == "prev" else "Next",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"ss:tutorial:{kind}",
+            disabled=disabled,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        embeds = getattr(getattr(interaction, "message", None), "embeds", None) or []
+        footer = ""
+        if embeds and embeds[0].footer:
+            footer = embeds[0].footer.text or ""
+        page = tutorial_page_from_footer(footer)
+        page += 1 if (self.custom_id or "").endswith(":next") else -1
+        card = tutorial_card(page)
+        await interaction.response.edit_message(
+            embed=to_embed(card),
+            view=TutorialView(tutorial_page_from_footer(card.footer)),
+        )
+
+
+class TutorialView(discord.ui.View):
+    def __init__(self, page: int = 0):
+        super().__init__(timeout=None)
+        last = tutorial_page_count() - 1
+        index = min(max(int(page), 0), last)
+        self.add_item(TutorialButton("prev", index <= 0))
+        self.add_item(TutorialButton("next", index >= last))
+
+    async def on_error(self, interaction, error, item, /) -> None:
+        del item
+        await report_component_failure("TutorialView", interaction, error)
 
 
 class ReplyButton(discord.ui.Button):

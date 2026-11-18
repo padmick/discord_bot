@@ -10,6 +10,12 @@ from present import (
     note_content,
     profile_prompt_card,
     help_card,
+    tip_card,
+    tip_candidates,
+    tip_id_for,
+    tutorial_card,
+    tutorial_page_count,
+    tutorial_page_from_footer,
     info_card,
     match_card,
     profile_card,
@@ -124,7 +130,7 @@ def test_command_descriptions_fit_slash_limits():
     helper = CustomHelpCommand()
     assert helper.command_attrs["help"] == "Show commands grouped by what you are doing"
     commands_by_name = {command.name: command for command in SecretSantaCog.__cog_commands__}
-    assert {"problem", "idea", "news"} <= set(commands_by_name)
+    assert {"problem", "idea", "news", "tutorial"} <= set(commands_by_name)
     assert "include" in commands_by_name["unexclude"].aliases
     assert not any("guild_only" in getattr(check, "__qualname__", "") for check in commands_by_name["status"].checks)
 
@@ -194,6 +200,23 @@ def test_roster_reminders_notes_and_reveal_layout():
     assert attached.image.endswith("note.gif?ex=1")
     assert image_url("https://tenor.com/view/cat-gif-12345") == ""
     assert note_content("A gift 🎁")[0] == "A gift 🎁"
+    first = tutorial_card(0)
+    assert first.title == "Tutorial · Joining"
+    assert "Step 1 of" in first.footer
+    assert tutorial_page_from_footer(first.footer) == 0
+    last = tutorial_card(tutorial_page_count() + 5)
+    assert tutorial_page_from_footer(last.footer) == tutorial_page_count() - 1
+    assert tutorial_card(-3).title == first.title
+    assert tip_id_for("join") == "profile"
+    assert tip_candidates("profile") == ("profile", "past-match")
+    assert tip_candidates("join") == ("profile",)
+    assert tip_id_for("setwishlist") == "past-match"
+    assert tip_id_for("message") == tip_id_for("match")
+    assert tip_id_for("tutorial") == ""
+    assert tip_id_for("leave") == ""
+    hint = tip_card("notes")
+    assert "GIF" in hint.text()
+    assert "shows once" in hint.footer
     news = changelog_card()
     assert "What's new" in news.title
     assert "/problem" in news.text()
@@ -275,4 +298,34 @@ def test_assignment_text_matches_the_card_and_long_text_is_clipped():
     embed = to_embed(match_card({"name": "Bea", "wishlist": "y" * 5000, "digital_only": False}))
     assert len(embed.fields[0].value) <= 1024
     assert embed.fields[0].value.endswith("…")
+
+
+async def test_tutorial_buttons_move_one_page_and_stop_at_the_ends():
+    from types import SimpleNamespace
+
+    from views import TutorialView
+
+    start = TutorialView(0)
+    assert start.children[0].disabled
+    assert not start.children[1].disabled
+    edited = {}
+
+    class Response:
+        async def edit_message(self, **kwargs):
+            edited.update(kwargs)
+
+    interaction = SimpleNamespace(
+        message=SimpleNamespace(embeds=[to_embed(tutorial_card(0))]),
+        response=Response(),
+    )
+    await start.children[1].callback(interaction)
+    assert "Step 2 of" in edited["embed"].footer.text
+    assert edited["view"].children[0].disabled is False
+
+    end = TutorialView(tutorial_page_count() - 1)
+    assert end.children[1].disabled
+    edited.clear()
+    interaction.message = SimpleNamespace(embeds=[to_embed(tutorial_card(tutorial_page_count() - 1))])
+    await end.children[0].callback(interaction)
+    assert f"Step {tutorial_page_count() - 1} of" in edited["embed"].footer.text
 

@@ -23,6 +23,7 @@ HELP_GROUPS = (
         "Getting started",
         (
             "help",
+            "tutorial",
             "info",
             "join",
             "leave",
@@ -162,6 +163,7 @@ def guide_fields() -> tuple[Field, ...]:
         Field(
             "Suggestions",
             "`/problem` reports a problem and `/idea` requests a feature. "
+            "`s!tutorial` walks through the commands when you ask. "
             "`s!news` shows what has changed. That note appears once, then only when something new ships.",
         ),
     )
@@ -174,7 +176,7 @@ def welcome_card(person_name: object, event_name: object) -> Card:
         title=f"Welcome to {event}"[:256],
         description=f"{person}, you're in. This is the whole event, from your profile to the gift.",
         fields=guide_fields(),
-        footer="s!help lists every command. s!info shows this guide again.",
+        footer="s!help lists every command. s!tutorial walks through them. s!info shows this guide again.",
     )
 
 
@@ -213,7 +215,7 @@ def help_card(entries: list[tuple[str, str]], prefix: str = "s!") -> Card:
         title="Secret Santa help",
         description="Commands are grouped by what you are doing. Slash commands do the same work.",
         fields=tuple(fields),
-        footer="s!help join shows one command. s!info explains the event.",
+        footer="s!tutorial walks through the commands. s!help join shows one command.",
     )
 
 
@@ -397,6 +399,156 @@ def anonymous_card(direction: str, body: str, reply_as: str, image: str = "") ->
         description=description,
         footer=f"Reply with the button, or s!message {reply_as}, to answer {who}. Emoji and GIF links are welcome.",
         image=picture,
+    )
+
+
+TUTORIAL_PAGES: tuple[tuple[str, str], ...] = (
+    (
+        "Joining",
+        "In the server, run `s!join` or `/join`. A guide arrives by DM.\n"
+        "`s!help` lists every command. `s!info` shows that guide again. "
+        "`s!tutorial` starts this walkthrough whenever you ask.",
+    ),
+    (
+        "Your profile",
+        "A wishlist is required. Add a shipping address unless the gift can be digital.\n"
+        "`s!profile` opens a private form. `s!setwishlist` and `s!setaddress` also work, "
+        "and those messages are deleted in a server channel. `s!myinfo` sends your profile by DM.",
+    ),
+    (
+        "The draw",
+        "When every profile is complete, the organizer runs `s!start`.\n"
+        "You are assigned one person, and someone else is assigned you. "
+        "You are not told who is buying for you. The match arrives by DM. `s!match` sends it again.",
+    ),
+    (
+        "Notes and the gift",
+        "`s!message giftee` writes to the person you're buying for. "
+        "They answer with `s!message gifter` or the Reply button. "
+        "Emoji, GIF links, and attached pictures show in the note. Keep their name out of the server.\n"
+        "Mark the gift one step at a time: `s!gift bought`, then `s!gift shipped`. "
+        "They mark `s!gift received`.",
+    ),
+    (
+        "If plans change",
+        "On `/profile` in the server, skip someone you were paired with before, even if they have not joined. "
+        "`s!exclude @someone` does the same. A skip after names are out applies if the matches are drawn again.\n"
+        "`s!leave` drops you from the event. After the draw, leaving redraws the open seats "
+        "and keeps every match it still can.",
+    ),
+    (
+        "Running it and asking for help",
+        "`s!create` opens one event. The organizer is not in the draw until they join. "
+        "`s!settings` chooses which reminders go out. `s!status` shows who is missing a profile, not what they wrote.\n"
+        "`s!problem` reports a problem. `s!idea` requests a feature. `s!news` shows what changed.",
+    ),
+)
+
+_STEP = re.compile(r"Step (\d+) of (\d+)")
+
+
+def tutorial_page_count() -> int:
+    return len(TUTORIAL_PAGES)
+
+
+def tutorial_card(page: int) -> Card:
+    last = len(TUTORIAL_PAGES) - 1
+    index = min(max(int(page), 0), last)
+    title, body = TUTORIAL_PAGES[index]
+    return Card(
+        title=f"Tutorial · {title}"[:256],
+        description=body,
+        footer=f"Step {index + 1} of {len(TUTORIAL_PAGES)}. Use the buttons, or s!tutorial to start over.",
+    )
+
+
+def tutorial_page_from_footer(footer: str) -> int:
+    match = _STEP.search(footer or "")
+    if match is None:
+        return 0
+    return max(0, int(match.group(1)) - 1)
+
+
+TIPS: dict[str, tuple[str, str]] = {
+    "profile": (
+        "Fill in your profile",
+        "A wishlist is required. `/profile` keeps it private. Add an address unless the gift can be digital.",
+    ),
+    "past-match": (
+        "Skip a past match",
+        "On `/profile` in the server, the menu skips someone you were paired with before, even if they have not joined.",
+    ),
+    "notes": (
+        "Anonymous notes",
+        "Emoji and a GIF link show in the note. The Reply button answers without putting their name in the channel.",
+    ),
+    "gift-steps": (
+        "One step at a time",
+        "Mark the gift bought, then shipped. The person receiving it marks `s!gift received`.",
+    ),
+    "skip-later": (
+        "Skips and the current draw",
+        "A skip after names are out does not change this draw. It applies if the matches are drawn again.",
+    ),
+    "privacy": (
+        "What status shows",
+        "`s!status` shows who is missing a profile. It does not show wishlists, addresses, or pairs.",
+    ),
+    "organizer": (
+        "You are not in the draw yet",
+        "Creating the event does not enter you. Join when you want a match. `s!settings` chooses how often reminders go out.",
+    ),
+    "ask-tutorial": (
+        "A walkthrough when you want it",
+        "`s!tutorial` walks through the commands one page at a time. It starts only when you ask.",
+    ),
+}
+
+COMMAND_TIPS = {
+    "join": "profile",
+    "profile": "past-match",
+    "setwishlist": "past-match",
+    "setaddress": "past-match",
+    "myinfo": "past-match",
+    "message": "notes",
+    "match": "notes",
+    "partnerinfo": "notes",
+    "gift": "gift-steps",
+    "exclude": "skip-later",
+    "unexclude": "skip-later",
+    "status": "privacy",
+    "participants": "privacy",
+    "create": "organizer",
+    "help": "ask-tutorial",
+    "info": "ask-tutorial",
+}
+
+
+def tip_id_for(command_name: str) -> str:
+    return COMMAND_TIPS.get(command_name or "", "")
+
+
+def tip_candidates(command_name: str) -> tuple[str, ...]:
+    """Tips this command may show, first unseen one only."""
+    name = command_name or ""
+    if name in {"profile", "setwishlist", "setaddress", "myinfo"}:
+        ordered = ("profile", "past-match")
+    else:
+        primary = tip_id_for(name)
+        ordered = (primary,) if primary else ()
+    unique: list[str] = []
+    for tip_id in ordered:
+        if tip_id not in unique:
+            unique.append(tip_id)
+    return tuple(unique)
+
+
+def tip_card(tip_id: str) -> Card:
+    title, body = TIPS[tip_id]
+    return Card(
+        title=title,
+        description=body,
+        footer="This hint shows once. s!tutorial walks through the commands when you ask.",
     )
 
 

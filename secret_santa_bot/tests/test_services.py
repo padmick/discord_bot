@@ -24,6 +24,7 @@ class FakeDB:
         self.pairings = {}
         self.feedback = []
         self.seen_changelog = {}
+        self.seen_tips = set()
         self.next_id = 1
         self.replace_calls = 0
 
@@ -173,6 +174,13 @@ class FakeDB:
         if int(version) <= current:
             return False
         self.seen_changelog[user_id] = int(version)
+        return True
+
+    def claim_tip(self, user_id, tip_id):
+        key = (str(user_id), tip_id)
+        if not tip_id or key in self.seen_tips:
+            return False
+        self.seen_tips.add(key)
         return True
 
 
@@ -762,6 +770,14 @@ def test_feedback_is_logged_and_the_changelog_shows_once(capsys):
     assert svc.claim_changelog("ada") is True
     assert svc.claim_changelog("ada") is False
     assert svc.claim_changelog("bea") is True
+    assert svc.claim_tip("ada", "") is False
+    assert svc.claim_tip("ada", "profile") is True
+    assert svc.claim_tip("ada", "profile") is False
+    assert svc.claim_tip("bea", "profile") is True
+    assert svc.claim_command_tip("ada", "profile") == "past-match"
+    assert svc.claim_command_tip("ada", "profile") == ""
+    assert svc.claim_command_tip("bea", "join") == ""
+    assert svc.claim_command_tip("cal", "join") == "profile"
     assert "profile" in _private_command_message("exclude")
     assert _private_command_message("include") == _private_command_message("exclude")
     assert _private_command_message("lock") == "Run that command in the server."

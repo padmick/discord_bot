@@ -11,6 +11,7 @@ from matching import assign_derangement, reroll_after_removal
 from utils import log_event
 from present import (
     CHANGELOG_VERSION,
+    tip_candidates,
     Card,
     format_help,
     label,
@@ -474,6 +475,17 @@ class EventService:
 
     def claim_changelog(self, user_id: str) -> bool:
         return bool(self.db.claim_changelog(str(user_id), CHANGELOG_VERSION))
+
+    def claim_tip(self, user_id: str, tip_id: str) -> bool:
+        if not tip_id:
+            return False
+        return bool(self.db.claim_tip(str(user_id), tip_id))
+
+    def claim_command_tip(self, user_id: str, command_name: str) -> str:
+        for tip_id in tip_candidates(command_name):
+            if self.claim_tip(user_id, tip_id):
+                return tip_id
+        return ""
 
     def reveal(self, guild_id: str, actor_id: str, is_admin: bool, confirmation: str) -> Result:
         event = self._managed(guild_id, actor_id, is_admin)

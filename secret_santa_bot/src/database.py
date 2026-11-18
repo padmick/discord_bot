@@ -175,6 +175,21 @@ class DatabaseManager:
 
         return self._run(query)
 
+    def claim_tip(self, user_id: str, tip_id: str) -> bool:
+        def query(cur):
+            cur.execute(
+                """
+                INSERT INTO tips_seen (user_id, tip_id)
+                VALUES (%s, %s)
+                ON CONFLICT DO NOTHING
+                RETURNING user_id
+                """,
+                (str(user_id), tip_id),
+            )
+            return cur.fetchone() is not None
+
+        return self._run(query)
+
     def delete_event(self, event_id: int) -> None:
         self._run(lambda cur: cur.execute("DELETE FROM events WHERE id = %s", (event_id,)))
 
@@ -410,6 +425,8 @@ class DatabaseManager:
             self._migrate_v2(cur)
         if self._schema_version(cur) < 3:
             self._migrate_v3(cur)
+        if self._schema_version(cur) < 4:
+            self._migrate_v4(cur)
         return legacy_count
 
     def _migrate_v1(self, cur) -> int | None:
@@ -546,6 +563,19 @@ class DatabaseManager:
             """
         )
         cur.execute("INSERT INTO schema_migrations (version) VALUES (3)")
+
+    def _migrate_v4(self, cur) -> None:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tips_seen (
+                user_id TEXT NOT NULL,
+                tip_id TEXT NOT NULL,
+                seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, tip_id)
+            )
+            """
+        )
+        cur.execute("INSERT INTO schema_migrations (version) VALUES (4)")
 
     def _schema_version(self, cur) -> int:
         cur.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")

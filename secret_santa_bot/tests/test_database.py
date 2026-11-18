@@ -237,6 +237,9 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
         assert manager.claim_changelog("ada", 1) is False
         assert manager.claim_changelog("ada", 2) is True
         manager.add_feedback("guild", "ada", "problem", "menu failed")
+        assert manager.claim_tip("ada", "profile") is True
+        assert manager.claim_tip("ada", "profile") is False
+        assert manager.claim_tip("ada", "notes") is True
     finally:
         manager.close()
 
@@ -247,8 +250,10 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
             assert cursor.fetchall() == [("guild", "ada", "problem", "menu failed")]
             cursor.execute("SELECT version FROM changelog_seen WHERE user_id = 'ada'")
             assert cursor.fetchone()[0] == 2
+            cursor.execute("SELECT tip_id FROM tips_seen WHERE user_id = 'ada' ORDER BY tip_id")
+            assert [row[0] for row in cursor.fetchall()] == ["notes", "profile"]
             cursor.execute("SELECT MAX(version) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 3
+            assert cursor.fetchone()[0] == 4
     finally:
         check.close()
 
