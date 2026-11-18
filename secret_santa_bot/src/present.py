@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import discord
+
+# Bump this, and rewrite changelog_card, when a release should show a new note.
+CHANGELOG_VERSION = 1
 
 SANTA_RED = 0xC23B22
 GIFT_STATUSES = ("not_bought", "bought", "shipped", "received")
@@ -28,6 +32,9 @@ HELP_GROUPS = (
             "myinfo",
             "exclude",
             "unexclude",
+            "problem",
+            "idea",
+            "news",
         ),
     ),
     (
@@ -71,12 +78,15 @@ class Card:
     fields: tuple[Field, ...] = ()
     footer: str = ""
     color: int = SANTA_RED
+    image: str = ""
 
     def text(self) -> str:
         lines = [self.title]
         if self.description:
             lines.append(self.description)
         lines.extend(f"{item.name}: {item.value}" for item in self.fields)
+        if self.image:
+            lines.append(self.image)
         if self.footer:
             lines.append(self.footer)
         return "\n".join(lines)
@@ -119,7 +129,8 @@ def guide_fields() -> tuple[Field, ...]:
         Field(
             "Anonymous notes",
             "Write to your person with `s!message giftee`. They can write back with `s!message gifter`. "
-            "Each note has a Reply button. Keep their name out of the server channel.",
+            "Emoji, GIF links, and attached pictures show in the note. Each note has a Reply button. "
+            "Keep their name out of the server channel.",
         ),
         Field(
             "The gift",
@@ -147,6 +158,11 @@ def guide_fields() -> tuple[Field, ...]:
             "`s!lock`, `s!deadline`, and `s!settings` are optional. `s!settings` chooses which reminders "
             "go out and how many days apart. `s!remind` sends a profile reminder immediately.\n"
             "`s!finish` archives a drawn event so another can be created.",
+        ),
+        Field(
+            "Suggestions",
+            "`/problem` reports a problem and `/idea` requests a feature. "
+            "`s!news` shows what has changed. That note appears once, then only when something new ships.",
         ),
     )
 
@@ -361,16 +377,100 @@ def shipping_reminder_card(deadline: object) -> Card:
     )
 
 
-def anonymous_card(direction: str, body: str, reply_as: str) -> Card:
+def anonymous_card(direction: str, body: str, reply_as: str, image: str = "") -> Card:
     if direction == "giftee":
         title = "A note from your Secret Santa"
     else:
         title = "A note from your giftee"
+    rendered, found = note_content(body)
+    picture = image or found
+    if rendered:
+        description = rendered
+    elif picture:
+        description = "Sent a GIF."
+    else:
+        description = "They sent a note with no text."
     return Card(
         title=title,
-        description=shown(body, "They sent a note with no text."),
-        footer=f"Reply with the button, or s!message {reply_as}.",
+        description=description,
+        footer=f"Reply with the button, or s!message {reply_as}. Emoji and GIF links are welcome.",
+        image=picture,
     )
+
+
+def changelog_card() -> Card:
+    return Card(
+        title="What's new",
+        description="A quick look at the latest Secret Santa updates.",
+        fields=(
+            Field(
+                "Notes",
+                "Emoji stay in anonymous notes. A GIF link or an attached picture shows in the note.",
+            ),
+            Field(
+                "Ideas",
+                "Use `/problem` to report a problem and `/idea` to request a feature.",
+            ),
+            Field(
+                "Past matches",
+                "On `/profile` in the server, skip someone you were paired with before, even if they have not joined.",
+            ),
+            Field(
+                "Getting around",
+                "Joining sends a guide by DM. `s!help` groups the commands, and `s!news` shows this again.",
+            ),
+        ),
+        footer="This shows once. A new note appears only when something new ships.",
+    )
+
+
+_NOTE_TOKEN = re.compile(
+    r"(<a?:[A-Za-z0-9_]{2,32}:\d{17,20}>)|(https?://[^\s<]+)",
+    re.IGNORECASE,
+)
+_IMAGE_SUFFIXES = (".gif", ".png", ".jpg", ".jpeg", ".webp")
+
+
+def note_content(body: str) -> tuple[str, str]:
+    """Keep emoji and GIF links intact, and return a direct image URL when there is one."""
+    image = ""
+    pieces: list[str] = []
+    last = 0
+    for match in _NOTE_TOKEN.finditer(body or ""):
+        pieces.append(safe(body[last:match.start()]))
+        emoji, url = match.group(1), match.group(2)
+        if emoji:
+            pieces.append(emoji)
+        else:
+            cleaned = url.rstrip(").,]>\"'")
+            extra = url[len(cleaned):]
+            direct = image_url(cleaned)
+            if direct and not image:
+                image = direct
+            pieces.append(f"<{cleaned}>")
+            if extra:
+                pieces.append(safe(extra))
+        last = match.end()
+    pieces.append(safe((body or "")[last:]))
+    return "".join(pieces).strip(), image
+
+
+def image_url(url: str) -> str:
+    """Return a URL Discord can show as an image, or an empty string."""
+    if not url.startswith(("http://", "https://")):
+        return ""
+    path = url.lower().split("?", 1)[0].split("#", 1)[0]
+    if path.endswith(_IMAGE_SUFFIXES):
+        return url
+    host_and_path = path.split("://", 1)[-1]
+    if host_and_path.startswith(("media.tenor.com/", "media1.tenor.com/", "c.tenor.com/")):
+        return url
+    giphy = re.search(r"giphy\.com/(?:gifs|media|embed)/([^/?#]+)", url, re.IGNORECASE)
+    if giphy:
+        gif_id = giphy.group(1).strip("/").rsplit("-", 1)[-1]
+        if gif_id:
+            return f"https://i.giphy.com/{gif_id}.gif"
+    return ""
 
 
 def announcement_card(text: str) -> Card:
@@ -437,6 +537,8 @@ def to_embed(card: Card) -> discord.Embed:
         embed.add_field(name=_clip(item.name, 256) or "Details", value=value, inline=item.inline)
     if card.footer:
         embed.set_footer(text=_clip(card.footer, 2048))
+    if card.image.startswith(("http://", "https://")):
+        embed.set_image(url=_clip(card.image, 2048))
     return embed
 
 

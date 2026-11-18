@@ -31,6 +31,12 @@ bot = commands.Bot(
 runtime = {"db": None, "synced": False}
 
 
+def _private_command_message(command_name: str) -> str:
+    if command_name in {"exclude", "unexclude", "skip", "unskip", "include"}:
+        return "Open `/profile` in the server to skip someone you were paired with before."
+    return "Run that command in the server."
+
+
 def health_payload(database_ok: bool, bot_ready: bool) -> tuple[dict, int]:
     body = {
         "status": "healthy" if database_ok else "unhealthy",
@@ -101,6 +107,9 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         await ctx.send("Command not found. Use `s!help` to see available commands.")
         return
+    if isinstance(error, commands.NoPrivateMessage):
+        await ctx.send(_private_command_message(getattr(ctx.command, "name", "")))
+        return
     if isinstance(error, commands.CheckFailure):
         await ctx.send(str(error) or "You can't use that command here.")
         return
@@ -119,7 +128,10 @@ async def on_app_command_error(interaction, error):
     original = getattr(error, "original", error)
     if isinstance(original, RateLimited):
         return
-    message = str(original)[:900] or "The command failed."
+    if isinstance(error, discord.app_commands.NoPrivateMessage) or isinstance(original, commands.NoPrivateMessage):
+        message = _private_command_message(getattr(interaction.command, "name", ""))
+    else:
+        message = str(original)[:900] or "The command failed."
     if interaction.response.is_done():
         await interaction.followup.send(message, ephemeral=True)
     else:

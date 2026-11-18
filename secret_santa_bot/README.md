@@ -11,7 +11,8 @@ Prefix commands use `s!`. The same actions are available as slash commands after
 - Wishlists, do-not-gift notes, notes, and an optional shipping address
 - Digital gifts that do not require an address
 - A past-match menu so you can skip someone you were paired with before, even if they have not joined yet, and a redraw when someone leaves after the draw
-- Anonymous messages with a Reply button
+- Anonymous messages with emoji, GIF links, attached pictures, and a Reply button
+- Problem reports and feature requests, plus a one-time what's-new note
 - Gift progress: bought, shipped, received
 - Reminder settings the organizer edits in a form. The bot checks once a day and sends after the chosen number of days, weekly by default.
 - A welcome DM when someone joins, plus grouped help and an event guide
@@ -80,13 +81,15 @@ Participants:
 - `s!profile` - Private form for wishlist, notes, address, and the digital-gift toggle.
 - `s!setwishlist <text>` / `s!setaddress <text>` - In a server channel, the command message is deleted.
 - `s!myinfo` - DM your profile.
-- `s!exclude @member` (also `s!skip`) / `s!unexclude @member` - Skip someone you were paired with before. They do not have to have joined. `/profile` in the server has the same menu.
+- `s!exclude @member` (also `s!skip`) / `s!unexclude @member` (also `s!unskip` and `s!include`) - Skip someone you were paired with before. They do not have to have joined. `/profile` in the server has the same menu. In a DM, the bot points you back to that menu.
 - `s!match` and `s!partnerinfo` - DM your match again.
-- `s!message gifter <text>` / `s!message giftee <text>`
+- `s!message gifter <text>` / `s!message giftee <text>` - Emoji and GIF links stay in the note. A direct GIF or image link, or a picture attached to a prefix command, shows in the note.
 - `s!gift bought|shipped|received`
 - `s!participants` / `s!status` / `s!info`
+- `s!problem <text>` / `s!idea <text>` - Save a problem report or a feature request. The note is stored and written to the log.
+- `s!news` - Show what has been added. The same note appears once on its own the next time someone uses the bot, then only when something new ships.
 
-`s!match`, `s!message`, `s!myinfo`, and `s!profile` work in a DM when you are in exactly one open event.
+`s!match`, `s!message`, `s!myinfo`, `s!profile`, and `s!status` work in a DM when you are in exactly one open event.
 
 ## Event flow
 
@@ -117,6 +120,8 @@ Database tests use `TEST_DATABASE_URL` when it is set. Otherwise they start a te
 
 - Finished events stay in the database. Cancelling deletes only the open event in that server.
 - Anonymous message logs record the direction and whether delivery worked. They do not record display names.
+- `s!problem` and `s!idea` are stored and written to the log as `PROBLEM` or `FEATURE`, so they can be found without a crash.
+- The what's-new note is shown once per person. `s!news` shows it again. A newer note appears only after the changelog version changes.
 - A wishlist edited after the draw is sent to the giver.
 - Leaving after the draw fails, and changes nothing, when the remaining people cannot be redrawn.
 

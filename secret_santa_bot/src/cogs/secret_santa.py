@@ -13,6 +13,7 @@ from present import (
     Card,
     announcement_card,
     anonymous_card,
+    changelog_card,
     command_help_card,
     draw_waiting_card,
     help_card,
@@ -92,6 +93,40 @@ class SecretSantaCog(commands.Cog):
             return
         await _say(ctx, f"Slow down. Try again in {seconds} seconds.")
         raise RateLimited()
+
+    async def cog_after_invoke(self, ctx):
+        await self._offer_changelog(ctx)
+
+    @commands.Cog.listener()
+    async def on_command_completion(self, ctx):
+        if getattr(ctx.command, "cog", None) is self:
+            return
+        await self._offer_changelog(ctx)
+
+    async def _offer_changelog(self, ctx):
+        try:
+            show = await self.run(self.service.claim_changelog, str(ctx.author.id))
+        except Exception as error:
+            report_failure("changelog", error)
+            return
+        if show:
+            await self._show_changelog(ctx)
+
+    async def _show_changelog(self, ctx):
+        card = changelog_card()
+        interaction = getattr(ctx, "interaction", None)
+        try:
+            if interaction is not None:
+                if interaction.response.is_done():
+                    await interaction.followup.send(embed=to_embed(card), ephemeral=True)
+                else:
+                    await interaction.response.send_message(embed=to_embed(card), ephemeral=True)
+                return
+            if ctx.guild is not None and await self._dm_card(str(ctx.author.id), card):
+                return
+            await _send_card(ctx, card)
+        except discord.HTTPException:
+            return
 
     async def run(self, func, *args, **kwargs):
         return await asyncio.to_thread(func, *args, **kwargs)
@@ -221,10 +256,12 @@ class SecretSantaCog(commands.Cog):
         await _show(ctx, result)
 
     @commands.hybrid_command(name="status", help="Show the event phase and who is missing a profile")
-    @commands.guild_only()
     async def status(self, ctx):
         """Show the event phase and who is missing a profile."""
-        result = await self.run(self.service.status, str(ctx.guild.id))
+        event = await self._personal_event(ctx)
+        if event is None:
+            return
+        result = await self.run(self.service.status, event["guild_id"])
         await _show(ctx, result)
 
     @commands.hybrid_command(name="participants", help="List participants")
@@ -256,7 +293,7 @@ class SecretSantaCog(commands.Cog):
 
     @commands.hybrid_command(
         name="unexclude",
-        aliases=["unskip"],
+        aliases=["unskip", "include"],
         help="Let a past match be paired with you again",
     )
     @commands.guild_only()
@@ -343,11 +380,33 @@ class SecretSantaCog(commands.Cog):
         """DM your match again."""
         await self._send_match(ctx)
 
-    @commands.hybrid_command(name="message", help="Send an anonymous note to your gifter or giftee")
-    async def message(self, ctx, recipient_type: str, *, text: str):
+    @commands.hybrid_command(name="message", help="Send a note with emoji, a GIF link, or a picture")
+    async def message(self, ctx, recipient_type: str, *, text: str = ""):
         """Send an anonymous note to your gifter or giftee."""
+        image = _attached_image(ctx)
         await _delete_invocation(ctx)
-        await self._send_anonymous(ctx.author, ctx.guild, recipient_type, text, _say_ctx(ctx))
+        await self._send_anonymous(ctx.author, ctx.guild, recipient_type, text, _say_ctx(ctx), image)
+
+    @commands.hybrid_command(name="problem", help="Report a problem with the bot")
+    async def problem(self, ctx, *, text: str):
+        """Report a problem with the bot."""
+        await self._feedback(ctx, "problem", text)
+
+    @commands.hybrid_command(name="idea", help="Request a feature")
+    async def idea(self, ctx, *, text: str):
+        """Request a feature."""
+        await self._feedback(ctx, "feature", text)
+
+    @commands.hybrid_command(name="news", help="See what has been added recently")
+    async def news(self, ctx):
+        """See what has been added recently."""
+        await self.run(self.service.claim_changelog, str(ctx.author.id))
+        await _send_card(ctx, changelog_card(), ephemeral=getattr(ctx, "interaction", None) is not None)
+
+    async def _feedback(self, ctx, kind: str, text: str):
+        guild_id = str(ctx.guild.id) if ctx.guild is not None else ""
+        result = await self.run(self.service.submit_feedback, guild_id, str(ctx.author.id), kind, text)
+        await _show(ctx, result)
 
     @commands.hybrid_command(name="gift", help="Update gift progress: bought, shipped, or received")
     async def gift(self, ctx, status: str):
@@ -566,7 +625,7 @@ class SecretSantaCog(commands.Cog):
             return
         await self._private(ctx, result.message, reply_as="giftee", card=result.card)
 
-    async def _send_anonymous(self, user, guild, recipient_type: str, text: str, respond):
+    async def _send_anonymous(self, user, guild, recipient_type: str, text: str, respond, image: str = ""):
         if guild is not None:
             event = await self.run(self.service.open_event, str(guild.id))
             if event is None:
@@ -587,6 +646,7 @@ class SecretSantaCog(commands.Cog):
             str(user.id),
             recipient_type,
             text,
+            image,
         )
         if not result.ok:
             await respond(result.message)
@@ -595,7 +655,7 @@ class SecretSantaCog(commands.Cog):
         reply_as = result.data["reply_as"]
         delivered = await self._dm_card(
             result.data["target_id"],
-            anonymous_card(direction, result.data["body"], reply_as),
+            anonymous_card(direction, result.data["body"], reply_as, result.data.get("image", "")),
             reply_as=reply_as,
         )
         log_event("MESSAGE", anonymous_message_log(delivered, direction))
@@ -681,6 +741,19 @@ class SecretSantaCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(SecretSantaCog(bot, bot.db_manager))
+
+
+def _attached_image(ctx) -> str:
+    message = getattr(ctx, "message", None)
+    for attachment in getattr(message, "attachments", None) or []:
+        content_type = (getattr(attachment, "content_type", None) or "").lower()
+        name = (getattr(attachment, "filename", None) or "").lower()
+        url = getattr(attachment, "url", "") or ""
+        if not url.startswith(("http://", "https://")):
+            continue
+        if content_type.startswith("image/") or name.endswith((".gif", ".png", ".jpg", ".jpeg", ".webp")):
+            return url
+    return ""
 
 
 def _is_admin(ctx) -> bool:

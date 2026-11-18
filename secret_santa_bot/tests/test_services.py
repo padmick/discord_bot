@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 from types import SimpleNamespace
 
-from bot import health_payload
+from bot import _private_command_message, health_payload
 from services import (
     EventService,
     RateLimiter,
@@ -22,6 +22,8 @@ class FakeDB:
         self.participant_order = []
         self.exclusions = set()
         self.pairings = {}
+        self.feedback = []
+        self.seen_changelog = {}
         self.next_id = 1
         self.replace_calls = 0
 
@@ -159,6 +161,19 @@ class FakeDB:
                 row["gift_status"] = status
                 updated += 1
         return updated
+
+    def add_feedback(self, guild_id, user_id, kind, body):
+        self.feedback.append(
+            {"guild_id": str(guild_id or ""), "user_id": str(user_id), "kind": kind, "body": body}
+        )
+
+    def claim_changelog(self, user_id, version):
+        user_id = str(user_id)
+        current = self.seen_changelog.get(user_id, 0)
+        if int(version) <= current:
+            return False
+        self.seen_changelog[user_id] = int(version)
+        return True
 
 
 def service():
@@ -718,10 +733,38 @@ def test_messages_exclusions_and_help_cover_the_remaining_rules():
     assert to_gifter.data["reply_as"] == "giftee"
     assert svc.prepare_message("guild", "a", "santa", "hello").code == "bad_target"
     assert svc.prepare_message("guild", "a", "giftee", "x" * 1001).code == "too_long"
+    assert svc.prepare_message("guild", "a", "giftee", "").code == "empty"
+    gif = svc.prepare_message("guild", "a", "giftee", "", "https://cdn.example/cat.gif")
+    assert gif.ok
+    assert gif.data["body"] == ""
+    assert gif.data["image"] == "https://cdn.example/cat.gif"
+    assert svc.prepare_message("guild", "a", "giftee", "hi", "javascript:alert(1)").data["image"] == ""
     assert svc.unexclude("guild", "a", "b").code == "missing_exclusion"
 
     signup = svc.leave("guild", "nobody")
     assert signup.code == "not_joined"
+
+
+def test_feedback_is_logged_and_the_changelog_shows_once(capsys):
+    svc, database = service()
+    assert svc.submit_feedback("guild", "ada", "problem", "   ").code == "empty"
+    assert svc.submit_feedback("guild", "ada", "problem", "x" * 1001).code == "too_long"
+    saved = svc.submit_feedback("guild", "ada", "problem", "the menu\nfailed")
+    assert saved.message.startswith("Problem report saved")
+    assert database.feedback[0]["body"] == "the menu failed"
+    err = capsys.readouterr().err
+    assert "INFO secret_santa PROBLEM: server guild user ada: the menu failed" in err
+    assert "ERROR" not in err
+    idea = svc.submit_feedback("", "ada", "feature", "gif notes")
+    assert idea.message.startswith("Feature request saved")
+    assert database.feedback[1]["kind"] == "feature"
+    assert database.feedback[1]["guild_id"] == ""
+    assert svc.claim_changelog("ada") is True
+    assert svc.claim_changelog("ada") is False
+    assert svc.claim_changelog("bea") is True
+    assert "profile" in _private_command_message("exclude")
+    assert _private_command_message("include") == _private_command_message("exclude")
+    assert _private_command_message("lock") == "Run that command in the server."
 
 
 def test_rate_limiter_window_and_disabled_mode():

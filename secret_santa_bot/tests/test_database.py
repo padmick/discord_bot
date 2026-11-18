@@ -233,8 +233,24 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
         assert event["shipping_reminders"] is True
         assert event["reminder_interval_days"] == 7
         assert event["shipping_lead_days"] == 3
+        assert manager.claim_changelog("ada", 1) is True
+        assert manager.claim_changelog("ada", 1) is False
+        assert manager.claim_changelog("ada", 2) is True
+        manager.add_feedback("guild", "ada", "problem", "menu failed")
     finally:
         manager.close()
+
+    check = psycopg2.connect(postgres_url)
+    try:
+        with check.cursor() as cursor:
+            cursor.execute("SELECT guild_id, user_id, kind, body FROM feedback")
+            assert cursor.fetchall() == [("guild", "ada", "problem", "menu failed")]
+            cursor.execute("SELECT version FROM changelog_seen WHERE user_id = 'ada'")
+            assert cursor.fetchone()[0] == 2
+            cursor.execute("SELECT MAX(version) FROM schema_migrations")
+            assert cursor.fetchone()[0] == 3
+    finally:
+        check.close()
 
     again = DatabaseManager(postgres_url)
     again.close()
