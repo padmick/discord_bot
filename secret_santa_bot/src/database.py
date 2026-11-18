@@ -146,6 +146,35 @@ class DatabaseManager:
 
         self._run(query)
 
+    def add_feedback(self, guild_id: str, user_id: str, kind: str, body: str) -> None:
+        def query(cur):
+            cur.execute(
+                """
+                INSERT INTO feedback (guild_id, user_id, kind, body)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (str(guild_id or ""), str(user_id), kind, body),
+            )
+
+        self._run(query)
+
+    def claim_changelog(self, user_id: str, version: int) -> bool:
+        def query(cur):
+            cur.execute(
+                """
+                INSERT INTO changelog_seen (user_id, version)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id) DO UPDATE
+                SET version = EXCLUDED.version, seen_at = NOW()
+                WHERE changelog_seen.version < EXCLUDED.version
+                RETURNING user_id
+                """,
+                (str(user_id), int(version)),
+            )
+            return cur.fetchone() is not None
+
+        return self._run(query)
+
     def delete_event(self, event_id: int) -> None:
         self._run(lambda cur: cur.execute("DELETE FROM events WHERE id = %s", (event_id,)))
 
@@ -379,6 +408,8 @@ class DatabaseManager:
             legacy_count = self._migrate_v1(cur)
         if self._schema_version(cur) < 2:
             self._migrate_v2(cur)
+        if self._schema_version(cur) < 3:
+            self._migrate_v3(cur)
         return legacy_count
 
     def _migrate_v1(self, cur) -> int | None:
@@ -491,6 +522,30 @@ class DatabaseManager:
             """
         )
         cur.execute("INSERT INTO schema_migrations (version) VALUES (2)")
+
+    def _migrate_v3(self, cur) -> None:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback (
+                id SERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                guild_id TEXT NOT NULL DEFAULT '',
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('problem', 'feature')),
+                body TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS changelog_seen (
+                user_id TEXT PRIMARY KEY,
+                version INTEGER NOT NULL,
+                seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute("INSERT INTO schema_migrations (version) VALUES (3)")
 
     def _schema_version(self, cur) -> int:
         cur.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")

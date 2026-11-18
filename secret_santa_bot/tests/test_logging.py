@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+from discord import app_commands
 from discord.ext import commands
 
 from bot import on_app_command_error, on_command_error, record_command_problem
@@ -36,7 +37,7 @@ def _context(command: str = "profile", guild_id=None, user_id: int = 8):
         sent.append(message)
 
     ctx = SimpleNamespace(
-        command=SimpleNamespace(qualified_name=command),
+        command=SimpleNamespace(name=command, qualified_name=command),
         guild=None if guild_id is None else SimpleNamespace(id=guild_id),
         author=SimpleNamespace(id=user_id),
         sent=sent,
@@ -66,6 +67,33 @@ def test_usage_mistakes_are_info_and_rate_limits_are_silent(capsys):
     err = capsys.readouterr().err
     assert "INFO secret_santa command unknown guild dm user 3 rejected: CommandNotFound" in err
     assert "ERROR" not in err
+
+
+async def test_private_exclude_points_at_the_profile_menu(capsys):
+    ctx = _context("exclude")
+    await on_command_error(ctx, commands.NoPrivateMessage())
+    assert "/profile" in ctx.sent[0]
+    err = capsys.readouterr().err
+    assert "NoPrivateMessage" in err
+    assert "ERROR" not in err
+
+    class Response:
+        def is_done(self):
+            return False
+
+        async def send_message(self, message, ephemeral=False):
+            del ephemeral
+            sent.append(message)
+
+    sent: list[str] = []
+    interaction = SimpleNamespace(
+        command=SimpleNamespace(name="lock", qualified_name="lock"),
+        guild_id=None,
+        user=SimpleNamespace(id=3),
+        response=Response(),
+    )
+    await on_app_command_error(interaction, app_commands.NoPrivateMessage())
+    assert sent[0] == "Run that command in the server."
 
 
 async def test_prefix_profile_exception_is_logged_and_shown(capsys):

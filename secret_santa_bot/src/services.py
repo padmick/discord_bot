@@ -8,13 +8,15 @@ from datetime import date, datetime
 from typing import Any
 
 from matching import assign_derangement, reroll_after_removal
+from utils import log_event
 from present import (
+    CHANGELOG_VERSION,
     Card,
     format_help,
     label,
     match_card,
     profile_card,
-        roster_card,
+    roster_card,
     settings_card,
     status_card,
     welcome_card,
@@ -414,7 +416,14 @@ class EventService:
             return success("**Marked the gift received.**")
         return failure("bad_status", "Use bought, shipped, or received.")
 
-    def prepare_message(self, guild_id: str, user_id: str, recipient_type: str, text: str) -> Result:
+    def prepare_message(
+        self,
+        guild_id: str,
+        user_id: str,
+        recipient_type: str,
+        text: str,
+        image: str = "",
+    ) -> Result:
         event = self._open(guild_id)
         if isinstance(event, Result):
             return event
@@ -424,8 +433,9 @@ class EventService:
         if direction not in ("gifter", "giftee"):
             return failure("bad_target", "Use gifter or giftee.")
         body = (text or "").strip()
-        if not body:
-            return failure("empty", "Write a message first.")
+        picture = image if str(image).startswith(("http://", "https://")) else ""
+        if not body and not picture:
+            return failure("empty", "Write a message, emoji, or GIF link first.")
         if len(body) > 1000:
             return failure("too_long", "Keep the message under 1000 characters.")
         user_id = str(user_id)
@@ -444,7 +454,26 @@ class EventService:
             reply_as=reply_as,
             body=body,
             direction=direction,
+            image=picture,
         )
+
+    def submit_feedback(self, guild_id: str, user_id: str, kind: str, text: str) -> Result:
+        body = " ".join((text or "").split())
+        if kind not in {"problem", "feature"}:
+            return failure("bad_kind", "Choose a problem or a feature request.")
+        if not body:
+            return failure("empty", "Write a short note first.")
+        if len(body) > 1000:
+            return failure("too_long", "Keep the note to 1000 characters.")
+        self.db.add_feedback(str(guild_id or ""), str(user_id), kind, body)
+        label_kind = "PROBLEM" if kind == "problem" else "FEATURE"
+        log_event(label_kind, f"server {guild_id or 'dm'} user {user_id}: {body}")
+        if kind == "problem":
+            return success("Problem report saved. Thank you for telling us.")
+        return success("Feature request saved. Thank you for the idea.")
+
+    def claim_changelog(self, user_id: str) -> bool:
+        return bool(self.db.claim_changelog(str(user_id), CHANGELOG_VERSION))
 
     def reveal(self, guild_id: str, actor_id: str, is_admin: bool, confirmation: str) -> Result:
         event = self._managed(guild_id, actor_id, is_admin)

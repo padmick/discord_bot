@@ -5,6 +5,9 @@ from datetime import date
 from cogs.secret_santa import CustomHelpCommand, SecretSantaCog
 from present import (
     anonymous_card,
+    changelog_card,
+    image_url,
+    note_content,
     profile_prompt_card,
     help_card,
     info_card,
@@ -120,6 +123,10 @@ def test_command_descriptions_fit_slash_limits():
         assert 1 <= len(command.short_doc) <= 100, command.name
     helper = CustomHelpCommand()
     assert helper.command_attrs["help"] == "Show commands grouped by what you are doing"
+    commands_by_name = {command.name: command for command in SecretSantaCog.__cog_commands__}
+    assert {"problem", "idea", "news"} <= set(commands_by_name)
+    assert "include" in commands_by_name["unexclude"].aliases
+    assert not any("guild_only" in getattr(check, "__qualname__", "") for check in commands_by_name["status"].checks)
 
 
 def test_profile_match_and_status_keep_private_text_in_the_right_card():
@@ -169,6 +176,24 @@ def test_roster_reminders_notes_and_reveal_layout():
     assert note.title == "A note from your Secret Santa"
     assert "@everyone" not in note.text()
     assert "s!message gifter" in note.footer
+    emoji = "<:party_hat:123456789012345678>"
+    rendered, found = note_content(f"Hello {emoji} and hello_world")
+    assert emoji in rendered
+    assert "hello\\_world" in rendered
+    assert found == ""
+    gif_note = anonymous_card("giftee", "https://giphy.com/gifs/cats-abc123", "gifter")
+    assert gif_note.image == "https://i.giphy.com/abc123.gif"
+    assert "https://giphy.com/gifs/cats-abc123" in gif_note.description
+    assert to_embed(gif_note).image.url == gif_note.image
+    attached = anonymous_card("gifter", "", "giftee", "https://cdn.discordapp.com/attachments/1/2/note.gif?ex=1")
+    assert attached.description == "Sent a GIF."
+    assert attached.image.endswith("note.gif?ex=1")
+    assert image_url("https://tenor.com/view/cat-gif-12345") == ""
+    assert note_content("A gift 🎁")[0] == "A gift 🎁"
+    news = changelog_card()
+    assert "What's new" in news.title
+    assert "/problem" in news.text()
+    assert "/idea" in news.text()
     draw = reveal_card([{"giver_name": "Ada", "receiver_name": "Bea"}])
     assert "Ada -> Bea" in draw.text()
     assert "not posted in the server" in draw.footer
