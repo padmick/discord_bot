@@ -13,6 +13,7 @@ Prefix commands use `s!`. The same actions are available as slash commands after
 - A past-match menu so you can skip someone you were paired with before, even if they have not joined yet, and a redraw when someone leaves after the draw
 - Anonymous messages with emoji, GIF links, attached pictures, and a Reply button
 - Problem reports and feature requests, plus a one-time what's-new note
+- A command tutorial when someone asks, and a short hint the first time they use a related command
 - Gift progress: bought, shipped, received
 - Reminder settings the organizer edits in a form. The bot checks once a day and sends after the chosen number of days, weekly by default.
 - A welcome DM when someone joins, plus grouped help and an event guide
@@ -88,6 +89,8 @@ Participants:
 - `s!participants` / `s!status` / `s!info`
 - `s!problem <text>` / `s!idea <text>` - Save a problem report or a feature request. The note is stored and written to the log.
 - `s!news` - Show what has been added. The same note appears once on its own the next time someone uses the bot, then only when something new ships.
+- `s!tutorial` - Walk through the commands one page at a time. It starts only when someone asks. Back and Next move between the pages.
+- Hints appear once, and only after a related command. Joining mentions the profile. Messaging mentions emoji and GIFs. A what's-new note takes that turn instead of a hint.
 
 `s!match`, `s!message`, `s!myinfo`, `s!profile`, and `s!status` work in a DM when you are in exactly one open event.
 
@@ -122,6 +125,7 @@ Database tests use `TEST_DATABASE_URL` when it is set. Otherwise they start a te
 - Anonymous message logs record the direction and whether delivery worked. They do not record display names.
 - `s!problem` and `s!idea` are stored and written to the log as `PROBLEM` or `FEATURE`, so they can be found without a crash.
 - The what's-new note is shown once per person. `s!news` shows it again. A newer note appears only after the changelog version changes.
+- Each hint is stored per person, so a restart does not show the same hint again. `s!tutorial` can be opened any time.
 - A wishlist edited after the draw is sent to the giver.
 - Leaving after the draw fails, and changes nothing, when the remaining people cannot be redrawn.
 
