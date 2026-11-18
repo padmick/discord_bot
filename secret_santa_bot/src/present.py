@@ -379,9 +379,11 @@ def shipping_reminder_card(deadline: object) -> Card:
 
 def anonymous_card(direction: str, body: str, reply_as: str, image: str = "") -> Card:
     if direction == "giftee":
-        title = "A note from your Secret Santa"
+        title = "A note from the person buying your gift"
+        who = "the person buying your gift"
     else:
-        title = "A note from your giftee"
+        title = "A note from the person you're buying for"
+        who = "the person you're buying for"
     rendered, found = note_content(body)
     picture = image or found
     if rendered:
@@ -393,7 +395,7 @@ def anonymous_card(direction: str, body: str, reply_as: str, image: str = "") ->
     return Card(
         title=title,
         description=description,
-        footer=f"Reply with the button, or s!message {reply_as}. Emoji and GIF links are welcome.",
+        footer=f"Reply with the button, or s!message {reply_as}, to answer {who}. Emoji and GIF links are welcome.",
         image=picture,
     )
 

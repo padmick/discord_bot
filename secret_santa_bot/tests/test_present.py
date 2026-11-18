@@ -173,9 +173,11 @@ def test_roster_reminders_notes_and_reveal_layout():
     assert "2026-12-20" in shipping.text()
     assert "s!gift shipped" in shipping.footer
     note = anonymous_card("giftee", "@everyone hello", "gifter")
-    assert note.title == "A note from your Secret Santa"
+    assert note.title == "A note from the person buying your gift"
+    assert "Secret Santa" not in note.title
     assert "@everyone" not in note.text()
     assert "s!message gifter" in note.footer
+    assert "person buying your gift" in note.footer
     emoji = "<:party_hat:123456789012345678>"
     rendered, found = note_content(f"Hello {emoji} and hello_world")
     assert emoji in rendered
@@ -186,6 +188,8 @@ def test_roster_reminders_notes_and_reveal_layout():
     assert "https://giphy.com/gifs/cats-abc123" in gif_note.description
     assert to_embed(gif_note).image.url == gif_note.image
     attached = anonymous_card("gifter", "", "giftee", "https://cdn.discordapp.com/attachments/1/2/note.gif?ex=1")
+    assert attached.title == "A note from the person you're buying for"
+    assert "s!message giftee" in attached.footer
     assert attached.description == "Sent a GIF."
     assert attached.image.endswith("note.gif?ex=1")
     assert image_url("https://tenor.com/view/cat-gif-12345") == ""
