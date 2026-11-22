@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import discord
 
 # Bump this, and rewrite changelog_card, when a release should show a new note.
-CHANGELOG_VERSION = 2
+CHANGELOG_VERSION = 3
 
 SANTA_RED = 0xC23B22
 GIFT_STATUSES = ("not_bought", "bought", "shipped", "received")
@@ -59,6 +59,11 @@ HELP_GROUPS = (
             "remind",
             "broadcast",
             "reveal",
+            "block",
+            "unblock",
+            "blocks",
+            "cap",
+            "rules",
             "logs",
             "reports",
             "ratelimit",
@@ -114,6 +119,16 @@ def shown(value: object, fallback: str) -> str:
     return text or fallback
 
 
+def spending_text(personal: object, cap: object = "") -> str:
+    own = str(personal or "").strip()
+    shared = str(cap or "").strip()
+    if own:
+        return shown(own, "Not set")
+    if shared:
+        return f"{shown(shared, 'Not set')} for this event"
+    return "Not set"
+
+
 def guide_fields() -> tuple[Field, ...]:
     return (
         Field(
@@ -162,6 +177,8 @@ def guide_fields() -> tuple[Field, ...]:
             "`s!create` opens one event in this server. The organizer is not in the draw until they join.\n"
             "`s!lock`, `s!deadline`, and `s!settings` are optional. `s!settings` chooses which reminders "
             "go out and how many days apart. `s!remind` sends a profile reminder immediately.\n"
+            "`s!block` keeps two people apart, and they cannot undo it. `s!cap` sets a spending cap. "
+            "`s!rules` adds a short note to the welcome and the match.\n"
             "`s!finish` archives a drawn event so another can be created.",
         ),
         Field(
@@ -174,13 +191,18 @@ def guide_fields() -> tuple[Field, ...]:
     )
 
 
-def welcome_card(person_name: object, event_name: object) -> Card:
+def welcome_card(person_name: object, event_name: object, rules: str = "") -> Card:
     person = label(person_name, "there")
     event = label(event_name, "Secret Santa")
+    fields: list[Field] = []
+    note = str(rules or "").strip()
+    if note:
+        fields.append(Field("Rules for this event", shown(note, "")))
+    fields.extend(guide_fields())
     return Card(
         title=f"Welcome to {event}"[:256],
         description=f"{person}, you're in. This is the whole event, from your profile to the gift.",
-        fields=guide_fields(),
+        fields=tuple(fields),
         footer="s!help lists every command. s!tutorial walks through them. s!info shows this guide again.",
     )
 
@@ -282,7 +304,7 @@ def profile_card(participant: dict) -> Card:
         description="This stays in a DM. After the draw, your giver sees the wishlist.",
         fields=(
             Field("Wishlist", shown(participant.get("wishlist"), "Not set")),
-            Field("Spending limit", shown(participant.get("budget"), "Not set")),
+            Field("Spending limit", spending_text(participant.get("budget"), participant.get("spending_cap"))),
             Field("Do not gift", shown(participant.get("do_not_gift"), "Not set")),
             Field("Notes", shown(participant.get("notes"), "Not set")),
             Field("Address", shown(participant.get("address"), "Not set")),
@@ -323,16 +345,20 @@ def match_card(receiver: dict) -> Card:
     else:
         delivery = shown(receiver.get("address"), "No address set")
     name = label(receiver.get("name"), "your giftee")
+    fields = [
+        Field("Wishlist", shown(receiver.get("wishlist"), "No wishlist set")),
+        Field("Spending limit", spending_text(receiver.get("budget"), receiver.get("spending_cap"))),
+        Field("Do not gift", shown(receiver.get("do_not_gift"), "Not set")),
+        Field("Notes", shown(receiver.get("notes"), "Not set")),
+        Field("Delivery", delivery),
+    ]
+    rules = str(receiver.get("rules") or "").strip()
+    if rules:
+        fields.append(Field("Rules", shown(rules, "")))
     return Card(
         title="Your match",
         description=f"You are getting a gift for **{name}**.",
-        fields=(
-            Field("Wishlist", shown(receiver.get("wishlist"), "No wishlist set")),
-            Field("Spending limit", shown(receiver.get("budget"), "Not set")),
-            Field("Do not gift", shown(receiver.get("do_not_gift"), "Not set")),
-            Field("Notes", shown(receiver.get("notes"), "Not set")),
-            Field("Delivery", delivery),
-        ),
+        fields=tuple(fields),
         footer="Message them with s!message giftee. Keep their name out of the server.",
     )
 
@@ -572,23 +598,47 @@ def changelog_card() -> Card:
         description="A quick look at the latest Secret Santa updates.",
         fields=(
             Field(
-                "Spending limit",
-                "Add an optional spending limit on `/profile` or with `s!setbudget`. Your giver sees it with the wishlist.",
+                "Locked pairs",
+                "The organizer can keep two people from being matched with `s!block`. They cannot remove that lock.",
             ),
             Field(
-                "Notes again",
-                "`s!notes` DMs the latest anonymous note in each direction. Names stay out of the server.",
+                "Spending cap",
+                "`s!cap` sets one spending cap for the event. It shows on a match when that person has not set their own.",
             ),
             Field(
-                "Tracking",
-                "When you ship the gift, add a link: `s!gift shipped https://...`. The person receiving it gets the link by DM.",
-            ),
-            Field(
-                "Reports",
-                "The organizer can read saved problem reports and feature requests with `s!reports`. That list is sent by DM.",
+                "Rules",
+                "`s!rules` adds a short note. It appears in the welcome DM and on the match.",
             ),
         ),
         footer="This shows once. A new note appears only when something new ships.",
+    )
+
+
+def event_setup_card(cap: object, rules: object) -> Card:
+    return Card(
+        title="Event setup",
+        description="These apply to everyone in this Secret Santa.",
+        fields=(
+            Field("Spending cap", shown(cap, "Not set")),
+            Field("Rules", shown(rules, "Not set")),
+        ),
+        footer="s!cap and s!rules change these. Use clear to remove one.",
+    )
+
+
+def _person_label(user_id: object) -> str:
+    text = str(user_id or "")
+    if text.isdigit():
+        return f"<@{text}>"
+    return "Someone"
+
+
+def blocks_card(pairs: list[tuple[str, str]]) -> Card:
+    lines = [f"{_person_label(left)} and {_person_label(right)}" for left, right in pairs]
+    return Card(
+        title="Locked pairs",
+        description="\n".join(lines),
+        footer="They cannot remove these. s!unblock removes one.",
     )
 
 

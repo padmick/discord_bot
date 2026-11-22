@@ -70,6 +70,9 @@ Server management (organizer or a server admin):
 - `s!finish` - Archive a drawn event so another can be created.
 - `s!cancel` - Delete this server's open event.
 - `s!remove @member` - Remove someone. After the draw, the seat is redrawn.
+- `s!block @person @person` - Keep two people from being matched. They cannot remove this. If the draw already paired them, it changes as few matches as it can. `s!unblock` removes the lock. `s!blocks` DMs the list.
+- `s!cap <text>` - Set a spending cap for the event. It shows on a match when that person has not set their own. `s!cap clear` removes it.
+- `s!rules <text>` - Add a short note to the welcome DM and the match. `s!rules clear` removes it.
 - `s!settings` - Choose profile and shipping reminders, the days between them, and how early shipping reminders start.
 - `s!remind` - DM people who still need a wishlist or address right now.
 - `s!broadcast <message>` - DM every participant.
@@ -126,7 +129,8 @@ Database tests use `TEST_DATABASE_URL` when it is set. Otherwise they start a te
 - Finished events stay in the database. Cancelling deletes only the open event in that server.
 - Anonymous message logs record the direction and whether delivery worked. They do not record display names.
 - `s!problem` and `s!idea` are stored and written to the log as `PROBLEM` or `FEATURE`. `s!reports` DMs that list to the organizer.
-- A spending limit is optional and is shown to the giver with the wishlist. The latest anonymous note in each direction can be DMed again with `s!notes`. A tracking link saved on the shipped step is DMed to the recipient.
+- A spending limit is optional and is shown to the giver with the wishlist. An event spending cap fills in when someone leaves their own blank. `s!rules` is included in the welcome DM and on the match.
+- The organizer can lock two people apart. That lock stays even if they try to remove it. The latest anonymous note in each direction can be DMed again with `s!notes`. A tracking link saved on the shipped step is DMed to the recipient.
 - The what's-new note is shown once per person. `s!news` shows it again. A newer note appears only after the changelog version changes.
 - Each hint is stored per person, so a restart does not show the same hint again. `s!tutorial` can be opened any time.
 - A wishlist edited after the draw is sent to the giver.

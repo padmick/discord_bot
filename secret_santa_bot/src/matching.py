@@ -181,3 +181,22 @@ def _best_derangement(
 
     search(0, 0)
     return best
+
+
+def reroll_for_exclusions(
+    pairings: dict[str, str],
+    exclusions: set[tuple[str, str]],
+    rng: random.Random,
+) -> dict[str, str] | None:
+    """Redraw so the current pairs respect exclusions, keeping every legal edge possible."""
+    people = list(pairings)
+    if len(people) < 2:
+        return None
+    if is_derangement(pairings, people, exclusions):
+        return dict(pairings)
+    preserved = {
+        giver: receiver
+        for giver, receiver in pairings.items()
+        if giver != receiver and (giver, receiver) not in exclusions
+    }
+    return _best_derangement(people, preserved, exclusions, rng)
