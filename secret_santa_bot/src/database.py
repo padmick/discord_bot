@@ -23,7 +23,8 @@ def _qualified(columns: str, table: str) -> str:
 
 
 PARTICIPANT_FIELDS = (
-    "event_id, user_id, name, wishlist, address, do_not_gift, notes, digital_only, budget"
+    "event_id, user_id, name, wishlist, address, do_not_gift, notes, digital_only, budget, "
+    "delivery_window"
 )
 PROFILE_FIELDS = {
     "name",
@@ -33,6 +34,7 @@ PROFILE_FIELDS = {
     "notes",
     "digital_only",
     "budget",
+    "delivery_window",
 }
 EVENT_UPDATE_FIELDS = {
     "phase",
@@ -636,6 +638,8 @@ class DatabaseManager:
             self._migrate_v7(cur)
         if self._schema_version(cur) < 8:
             self._migrate_v8(cur)
+        if self._schema_version(cur) < 9:
+            self._migrate_v9(cur)
         return legacy_count
 
     def _migrate_v1(self, cur) -> int | None:
@@ -693,6 +697,7 @@ class DatabaseManager:
                 notes TEXT,
                 digital_only BOOLEAN NOT NULL DEFAULT FALSE,
                 budget TEXT,
+                delivery_window TEXT,
                 UNIQUE (event_id, user_id)
             )
             """
@@ -840,6 +845,11 @@ class DatabaseManager:
         if self._table_exists(cur, "events"):
             cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS announce_channel_id TEXT")
         cur.execute("INSERT INTO schema_migrations (version) VALUES (8)")
+
+    def _migrate_v9(self, cur) -> None:
+        if self._table_exists(cur, "participants"):
+            cur.execute("ALTER TABLE participants ADD COLUMN IF NOT EXISTS delivery_window TEXT")
+        cur.execute("INSERT INTO schema_migrations (version) VALUES (9)")
 
     def _schema_version(self, cur) -> int:
         cur.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import discord
 
 # Bump this, and rewrite changelog_card, when a release should show a new note.
-CHANGELOG_VERSION = 5
+CHANGELOG_VERSION = 6
 
 SANTA_RED = 0xC23B22
 GIFT_STATUSES = ("not_bought", "bought", "shipped", "received")
@@ -32,6 +32,7 @@ HELP_GROUPS = (
             "setwishlist",
             "setaddress",
             "setbudget",
+            "setwindow",
             "myinfo",
             "exclude",
             "unexclude",
@@ -142,7 +143,8 @@ def guide_fields() -> tuple[Field, ...]:
             "A wishlist is required. Add a shipping address too, unless the gift can be digital. "
             "A spending limit is optional.\n"
             "Use `/profile` for the private form. `s!setwishlist`, `s!setaddress`, and `s!setbudget` also work, "
-            "and those messages are deleted in a server channel.",
+            "and those messages are deleted in a server channel. "
+            "`s!setwindow` is optional and tells your giver when a package can arrive.",
         ),
         Field(
             "The draw",
@@ -225,7 +227,8 @@ def welcome_card(
         title=f"Welcome to {event}"[:256],
         description=(
             f"{person}, you're in. Next, add a wishlist with `/profile`. "
-            "Add an address too, unless the gift can be digital."
+            "Add an address too, unless the gift can be digital. "
+            "A delivery window is optional: `s!setwindow`."
         ),
         fields=tuple(fields),
         footer="s!help lists every command. s!tutorial walks through them. s!info shows the full guide.",
@@ -334,6 +337,7 @@ def profile_card(participant: dict) -> Card:
             Field("Do not gift", shown(participant.get("do_not_gift"), "Not set")),
             Field("Notes", shown(participant.get("notes"), "Not set")),
             Field("Address", shown(participant.get("address"), "Not set")),
+            Field("Delivery window", shown(participant.get("delivery_window"), "Not set")),
             Field("Digital gift", digital, inline=True),
         ),
         footer="Change it with /profile. A wishlist edit after the draw is sent to your giver.",
@@ -357,7 +361,8 @@ def profile_prompt_card(in_guild: bool = True) -> Card:
         fields=(
             Field(
                 "What the draw needs",
-                "A wishlist is required. An address is required unless the gift is digital.",
+                "A wishlist is required. An address is required unless the gift is digital. "
+                "A delivery window is optional and tells your giver when a package can arrive.",
             ),
             Field("Past matches", past_match),
         ),
@@ -378,6 +383,9 @@ def match_card(receiver: dict) -> Card:
         Field("Notes", shown(receiver.get("notes"), "Not set")),
         Field("Delivery", delivery),
     ]
+    window = str(receiver.get("delivery_window") or "").strip()
+    if window:
+        fields.append(Field("Delivery window", shown(window, "")))
     rules = str(receiver.get("rules") or "").strip()
     if rules:
         fields.append(Field("Rules", shown(rules, "")))
@@ -472,8 +480,8 @@ TUTORIAL_PAGES: tuple[tuple[str, str], ...] = (
     (
         "Your profile",
         "A wishlist is required. Add a shipping address unless the gift can be digital.\n"
-        "`s!profile` opens a private form. `s!setwishlist`, `s!setaddress`, and `s!setbudget` also work, "
-        "and those messages are deleted in a server channel. A spending limit is optional. "
+        "`s!profile` opens a private form. `s!setwishlist`, `s!setaddress`, `s!setbudget`, and `s!setwindow` also work, "
+        "and those messages are deleted in a server channel. A spending limit and a delivery window are optional. "
         "`s!myinfo` sends your profile by DM.",
     ),
     (
@@ -646,6 +654,11 @@ def changelog_card() -> Card:
                 "First join",
                 "Joining sends a short welcome: fill in your profile, plus any rules or past matches. "
                 "`s!tutorial`, `s!hint`, and `s!help` work anytime.",
+            ),
+            Field(
+                "Delivery window",
+                "An optional note tells your giver when a package can arrive. "
+                "`s!setwindow` sets it. Leave it blank, or use `s!setwindow clear`, to skip it.",
             ),
         ),
         footer="This shows once. A new note appears only when something new ships.",
@@ -918,6 +931,15 @@ def wishlist_update_card(wishlist: str) -> Card:
     return Card(
         title="Your giftee updated their wishlist",
         description=shown(wishlist, "Their wishlist is now empty."),
+    )
+
+
+def delivery_window_update_card(window: str) -> Card:
+    text = str(window or "").strip()
+    description = shown(text, "") if text else "They cleared the delivery window."
+    return Card(
+        title="Your giftee updated their delivery window",
+        description=description,
     )
 
 

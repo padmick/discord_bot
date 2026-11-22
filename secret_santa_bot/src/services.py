@@ -40,13 +40,14 @@ DRAWN = "drawn"
 DONE = "done"
 GIFT_STATUSES = ("not_bought", "bought", "shipped", "received")
 GIVER_NEXT = {"not_bought": "bought", "bought": "shipped"}
-SENSITIVE_FIELDS = {"wishlist", "address", "budget"}
+SENSITIVE_FIELDS = {"wishlist", "address", "budget", "delivery_window"}
 FIELD_LIMITS = {
     "wishlist": 1000,
     "address": 1000,
     "do_not_gift": 500,
     "notes": 500,
     "budget": 80,
+    "delivery_window": 300,
 }
 _TRACKING_LINK = re.compile(r"https?://[^\s<>]{1,500}\Z", re.IGNORECASE)
 DEFAULT_REMINDER_INTERVAL_DAYS = 7
@@ -81,7 +82,7 @@ def missing_fields(participant: dict[str, Any]) -> list[str]:
 
 
 def should_delete_channel_text(field_name: str, in_guild: bool) -> bool:
-    """Wishlist and address text typed in a server channel must be removed."""
+    """Private profile text typed in a server channel must be removed."""
     return bool(in_guild) and field_name in SENSITIVE_FIELDS
 
 
@@ -637,6 +638,8 @@ class EventService:
         if field_name not in FIELD_LIMITS:
             return failure("bad_field", "That profile field is not editable.", delete_message=delete_message)
         cleaned = (value or "").strip()
+        if field_name == "delivery_window" and cleaned.lower() == "clear":
+            cleaned = ""
         limit = FIELD_LIMITS[field_name]
         if len(cleaned) > limit:
             return failure(
@@ -684,11 +687,18 @@ class EventService:
         if delete_message:
             payload["delete_message"] = True
         wishlist_changed = "wishlist" in stored and (stored.get("wishlist") or "") != (current.get("wishlist") or "")
-        if event["phase"] == DRAWN and wishlist_changed:
+        window_changed = (
+            "delivery_window" in stored
+            and (stored.get("delivery_window") or "") != (current.get("delivery_window") or "")
+        )
+        if event["phase"] == DRAWN and (wishlist_changed or window_changed):
             giver_id = self._giver_for(event["id"], user_id)
             if giver_id:
                 payload["notify_gifter_id"] = giver_id
-                payload["wishlist"] = stored.get("wishlist") or ""
+                if wishlist_changed:
+                    payload["wishlist"] = stored.get("wishlist") or ""
+                if window_changed:
+                    payload["delivery_window"] = stored.get("delivery_window") or ""
         return success("**Profile saved.**", **payload)
 
     def my_info(self, guild_id: str, user_id: str) -> Result:
@@ -1182,6 +1192,7 @@ class EventService:
             "do_not_gift": receiver.get("do_not_gift") or "",
             "notes": receiver.get("notes") or "",
             "budget": receiver.get("budget") or "",
+            "delivery_window": receiver.get("delivery_window") or "",
             "spending_cap": event.get("spending_cap") or "",
             "rules": event.get("rules") or "",
             "digital_only": bool(receiver.get("digital_only")),
@@ -1312,6 +1323,7 @@ def assignment_text(note: dict[str, Any]) -> str:
         "do_not_gift": note.get("do_not_gift"),
         "notes": note.get("notes"),
         "budget": note.get("budget"),
+        "delivery_window": note.get("delivery_window"),
         "spending_cap": note.get("spending_cap"),
         "rules": note.get("rules"),
         "digital_only": note.get("digital_only"),

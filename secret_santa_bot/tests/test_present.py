@@ -89,6 +89,7 @@ def test_welcome_explains_the_event_and_neutralizes_mentions():
     assert "Winter" in text
     assert "wishlist" in text
     assert "/profile" in text
+    assert "s!setwindow" in text
     assert "digital" in text
     assert "s!start" not in text
     assert "s!reveal" not in text
@@ -125,6 +126,7 @@ def test_info_keeps_the_full_guide():
     assert welcome_card("Ada", "Party").fields == ()
     assert "s!join" in info.footer
     assert "short welcome" in info.footer
+    assert "s!setwindow" in info.text()
 
 
 def test_help_groups_commands_and_keeps_each_field_short():
@@ -153,7 +155,7 @@ def test_command_descriptions_fit_slash_limits():
     assert {"problem", "idea", "news", "tutorial", "setbudget", "notes", "reports", "block", "cap", "rules"} <= set(
         commands_by_name
     )
-    assert {"signupby", "carrylocks", "waiting", "setup", "announce", "hint"} <= set(commands_by_name)
+    assert {"signupby", "carrylocks", "waiting", "setup", "announce", "hint", "setwindow"} <= set(commands_by_name)
     assert "include" in commands_by_name["unexclude"].aliases
     assert not any("guild_only" in getattr(check, "__qualname__", "") for check in commands_by_name["status"].checks)
 
@@ -318,11 +320,12 @@ def test_roster_reminders_notes_and_reveal_layout():
     assert "GIF" in hint.text()
     assert "shows once" in hint.footer
     news = changelog_card()
-    assert CHANGELOG_VERSION == 5
+    assert CHANGELOG_VERSION == 6
     assert "What's new" in news.title
     assert "s!setup" in news.text()
     assert "s!announce" in news.text()
     assert "s!hint" in news.text()
+    assert "s!setwindow" in news.text()
     copied = notes_card([("To the person you're buying for", "hello @Ada", "https://cdn.example/a.gif")])
     assert "@Ada" not in copied.text()
     assert "hello" in copied.text()
