@@ -2,7 +2,7 @@
 
 A Discord bot for one Secret Santa at a time in each server. It collects private wishlists and addresses, draws a derangement that respects exclusions, and lets pairs message each other without sharing names in the channel.
 
-Prefix commands use `s!`. The same actions are available as slash commands after the bot syncs them.
+Prefix commands use `s!`. A space after the mark is fine, and `S!` works the same, so `S! tutorial` and `s!tutorial` are the same command. The same actions are available as slash commands after the bot syncs them.
 
 ## Features
 
