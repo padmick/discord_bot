@@ -136,7 +136,7 @@ class ProfileModal(discord.ui.Modal, title="Secret Santa profile"):
                 address=self.address.value,
             )
             if result.ok and result.data and result.data.get("notify_gifter_id"):
-                await self.cog.notify_wishlist(result.data)
+                await self.cog.notify_profile_change(result.data)
             await interaction.followup.send(result.message, ephemeral=True)
         except Exception as exc:
             report_failure(f"profile form guild {self.guild_id} user {self.user_id}", exc)
@@ -145,6 +145,53 @@ class ProfileModal(discord.ui.Modal, title="Secret Santa profile"):
     async def on_error(self, interaction, error, /) -> None:
         await report_component_failure(
             f"profile form guild {self.guild_id} user {self.user_id}",
+            interaction,
+            error,
+        )
+
+
+class DeliveryWindowModal(discord.ui.Modal, title="Delivery window"):
+    def __init__(self, cog, guild_id: str, user_id: str, current: object):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = guild_id
+        self.user_id = user_id
+        saved = str(current or "").strip()
+        self.window = discord.ui.TextInput(
+            label="When a package can arrive",
+            style=discord.TextStyle.paragraph,
+            placeholder="Away next week and Dec 8-22. Don't leave it at the door.",
+            default=saved or None,
+            required=False,
+            max_length=300,
+        )
+        self.add_item(self.window)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("This form belongs to someone else.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        text = self.window.value.strip()
+        if text.lower() == "clear":
+            text = ""
+        try:
+            result = await self.cog.run(
+                self.cog.service.update_profile,
+                self.guild_id,
+                self.user_id,
+                delivery_window=text,
+            )
+            if result.ok and result.data and result.data.get("notify_gifter_id"):
+                await self.cog.notify_profile_change(result.data)
+            await interaction.followup.send(result.message, ephemeral=True)
+        except Exception as exc:
+            report_failure(f"delivery window guild {self.guild_id} user {self.user_id}", exc)
+            await interaction.followup.send("The delivery window could not be saved.", ephemeral=True)
+
+    async def on_error(self, interaction, error, /) -> None:
+        await report_component_failure(
+            f"delivery window guild {self.guild_id} user {self.user_id}",
             interaction,
             error,
         )
@@ -215,6 +262,24 @@ class ProfileView(discord.ui.View):
             await interaction.response.send_message(info.message, ephemeral=True)
             return
         await interaction.response.send_modal(ProfileModal(self.cog, self.guild_id, self.user_id, info.data or {}))
+
+    @discord.ui.button(label="Delivery window", style=discord.ButtonStyle.secondary)
+    async def delivery_window(self, interaction: discord.Interaction, button: discord.ui.Button):
+        del button
+        if not await self._owner(interaction):
+            return
+        info = await self.cog.run(self.cog.service.my_info, self.guild_id, self.user_id)
+        if not info.ok:
+            await interaction.response.send_message(info.message, ephemeral=True)
+            return
+        await interaction.response.send_modal(
+            DeliveryWindowModal(
+                self.cog,
+                self.guild_id,
+                self.user_id,
+                (info.data or {}).get("delivery_window"),
+            )
+        )
 
     @discord.ui.button(label="Toggle digital gift", style=discord.ButtonStyle.secondary)
     async def toggle_digital(self, interaction: discord.Interaction, button: discord.ui.Button):

@@ -99,6 +99,7 @@ class FakeDB:
                 "do_not_gift": None,
                 "notes": None,
                 "budget": None,
+                "delivery_window": None,
                 "digital_only": False,
             }
             self.participant_order.append(key)
@@ -421,6 +422,101 @@ def test_profile_updates_for_members_only_and_channel_text_is_flagged():
     assert status.data["missing_wishlist"] == []
     event = database.get_open_event("guild")
     assert database.get_participant(event["id"], "a")["address"] == "hidden street"
+
+
+async def test_delivery_window_button_saves_an_optional_note():
+    from views import DeliveryWindowModal, ProfileView
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    ready_participant(svc, "guild", "11", "Ada")
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def notify_profile_change(self, payload):
+            self.payload = payload
+
+    class Response:
+        def __init__(self):
+            self.done = False
+            self.modals = []
+            self.messages = []
+
+        def is_done(self):
+            return self.done
+
+        async def defer(self, ephemeral=False):
+            del ephemeral
+            self.done = True
+
+        async def send_message(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+            self.done = True
+
+        async def send_modal(self, modal):
+            self.modals.append(modal)
+            self.done = True
+
+    class Followup:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+
+    cog = Cog()
+    view = ProfileView(cog, "guild", "11", False)
+    opener = SimpleNamespace(user=SimpleNamespace(id="11"), response=Response(), followup=Followup())
+    await view.delivery_window.callback(opener)
+    modal = opener.response.modals[0]
+    assert isinstance(modal, DeliveryWindowModal)
+    assert modal.window.required is False
+    modal.window._value = "Home after Dec 20. Don't leave it at the door."
+    submitted = SimpleNamespace(user=SimpleNamespace(id="11"), response=Response(), followup=Followup())
+    await modal.on_submit(submitted)
+    event = database.get_open_event("guild")
+    assert "Dec 20" in database.get_participant(event["id"], "11")["delivery_window"]
+    assert "Profile saved" in submitted.followup.messages[-1]
+
+
+def test_delivery_window_is_optional_and_shown_to_the_giver():
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    ready_participant(svc, "guild", "a", "Ada")
+    ready_participant(svc, "guild", "b", "Bea")
+    saved = svc.set_text_field(
+        "guild",
+        "b",
+        "delivery_window",
+        "Away next week. Don't leave it at the door.",
+        True,
+    )
+    assert saved.ok
+    assert saved.data.get("delete_message") is True
+    assert should_delete_channel_text("delivery_window", True)
+    event = database.get_open_event("guild")
+    assert "door" in database.get_participant(event["id"], "b")["delivery_window"]
+    assert "Delivery window" in svc.my_info("guild", "b").card.text()
+    assert svc.start("guild", "org", False).ok
+    match = svc.match_info("guild", "a")
+    assert "Delivery window" in match.card.text()
+    assert "door" in match.card.text()
+    changed = svc.set_text_field("guild", "b", "delivery_window", "Home after Dec 20", False)
+    assert changed.data["notify_gifter_id"] == "a"
+    assert changed.data["delivery_window"] == "Home after Dec 20"
+    assert "wishlist" not in changed.data
+    cleared = svc.set_text_field("guild", "b", "delivery_window", "clear", False)
+    assert database.get_participant(event["id"], "b")["delivery_window"] is None
+    assert "Delivery window" not in svc.match_info("guild", "a").card.text()
+    assert cleared.data["delivery_window"] == ""
+    assert svc.set_text_field("guild", "b", "delivery_window", "x" * 301, False).code == "too_long"
 
 
 def test_wishlist_change_after_the_draw_names_the_gifter():

@@ -309,6 +309,12 @@ async def test_one_event_exercises_every_feature(db):
     await invoke(cog, SecretSantaCog.setwishlist, org, wishlist="Notebook")
     await invoke(cog, SecretSantaCog.setaddress, org, address="9 Organizer Way")
     await invoke(cog, SecretSantaCog.setbudget, org, budget="$40")
+    await invoke(
+        cog,
+        SecretSantaCog.setwindow,
+        ada,
+        text="Away next week. Don't leave it at the door.",
+    )
 
     bea_info = await invoke(cog, SecretSantaCog.myinfo, bea)
     assert "$25 for this event" in _titled(bea, "Your profile")
@@ -317,6 +323,7 @@ async def test_one_event_exercises_every_feature(db):
     assert "$10" in _titled(ada, "Your profile")
     assert "Candles" in _titled(ada, "Your profile")
     assert "for this event" not in _titled(ada, "Your profile")
+    assert "Don't leave it at the door" in _titled(ada, "Your profile")
     assert "Sent in a DM" in plain(ada_info.sent)
 
     started = await invoke(cog, SecretSantaCog.start, org)
@@ -327,6 +334,8 @@ async def test_one_event_exercises_every_feature(db):
     assert set(drawn) == {"101", "111", "222", "333", "444"}
     assert "Your match" in inbox(ada)
     assert "Handmade gifts only" in inbox(ada)
+    ada_giver = next(giver for giver, receiver in drawn.items() if receiver == "111")
+    assert "Don't leave it at the door" in inbox(people[int(ada_giver)])
 
     bea_giver = next(giver for giver, receiver in drawn.items() if receiver == "222")
     giver_person = people[int(bea_giver)]

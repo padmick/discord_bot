@@ -29,6 +29,7 @@ from present import (
     setup_card,
     shipped_card,
     to_embed,
+    delivery_window_update_card,
     wishlist_update_card,
 )
 from services import (
@@ -555,6 +556,11 @@ class SecretSantaCog(commands.Cog):
         """Set the spending limit for your gift."""
         await self._set_field(ctx, "budget", budget)
 
+    @commands.hybrid_command(name="setwindow", help="Set an optional window for when a package can arrive")
+    async def setwindow(self, ctx, *, text: str):
+        """Set an optional window for when a package can arrive."""
+        await self._set_field(ctx, "delivery_window", text)
+
     @commands.hybrid_command(name="myinfo", help="DM your profile")
     async def myinfo(self, ctx):
         """DM your profile."""
@@ -847,6 +853,17 @@ class SecretSantaCog(commands.Cog):
             wishlist_update_card(payload.get("wishlist") or ""),
         )
 
+    async def notify_profile_change(self, payload: dict):
+        if not payload or not payload.get("notify_gifter_id"):
+            return
+        if "wishlist" in payload:
+            await self.notify_wishlist(payload)
+        if "delivery_window" in payload:
+            await self._dm_card(
+                payload["notify_gifter_id"],
+                delivery_window_update_card(payload.get("delivery_window") or ""),
+            )
+
     async def _set_field(self, ctx, field_name: str, value: str):
         await _delete_invocation(ctx)
         event = await self._personal_event(ctx)
@@ -863,7 +880,7 @@ class SecretSantaCog(commands.Cog):
         if result.ok:
             log_event(field_name.upper(), f"user {ctx.author.id}")
         if result.data and result.data.get("notify_gifter_id"):
-            await self.notify_wishlist(result.data)
+            await self.notify_profile_change(result.data)
         await self._private(ctx, result.message)
 
     async def _send_match(self, ctx):
@@ -1066,6 +1083,7 @@ def _match_card(note: dict) -> Card:
             "do_not_gift": note.get("do_not_gift"),
             "notes": note.get("notes"),
             "budget": note.get("budget"),
+            "delivery_window": note.get("delivery_window"),
             "spending_cap": note.get("spending_cap"),
             "rules": note.get("rules"),
             "digital_only": note.get("digital_only"),

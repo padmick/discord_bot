@@ -321,6 +321,7 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
         assert person["name"] == "Ada"
         assert "shirt_size" not in person
         assert person["budget"] is None
+        assert person["delivery_window"] is None
         event = manager.get_open_event("guild")
         assert event["profile_reminders"] is True
         assert event["shipping_reminders"] is True
@@ -350,7 +351,7 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
             cursor.execute("SELECT tip_id FROM tips_seen WHERE user_id = 'ada' ORDER BY tip_id")
             assert [row[0] for row in cursor.fetchall()] == ["notes", "profile"]
             cursor.execute("SELECT MAX(version) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 8
+            assert cursor.fetchone()[0] == 9
     finally:
         check.close()
 
