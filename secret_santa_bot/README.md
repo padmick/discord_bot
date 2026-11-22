@@ -113,9 +113,10 @@ Participants:
 
 ```bash
 poetry run pytest
+poetry run pytest --cov
 ```
 
-Database tests use `TEST_DATABASE_URL` when it is set. Otherwise they start a temporary local Postgres cluster.
+`tests/test_smoke.py` walks one event through every command against Postgres. Database tests use `TEST_DATABASE_URL` when it is set. Otherwise they start a temporary local Postgres cluster.
 
 ## Setting up Discord
 
