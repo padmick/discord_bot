@@ -25,6 +25,15 @@ services:
   - key: DATABASE_URL
     scope: RUN_TIME
     value: ${db-secret-santa.DATABASE_URL}
+  - key: CLOUDFLARE_ACCOUNT_ID
+    scope: RUN_TIME
+    value: "ed6ea78b0237fb504eaa26c30768dd4f"
+  - key: CLOUDFLARE_API_TOKEN
+    scope: RUN_TIME
+    type: SECRET
+  - key: EASTER_EGG_MODEL
+    scope: RUN_TIME
+    value: "@cf/ibm-granite/granite-4.0-h-micro"
 ingress:
   rules:
   - component:

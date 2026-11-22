@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import re
 from dataclasses import dataclass
 
@@ -114,6 +115,31 @@ def safe(value: object) -> str:
     for char in ("*", "_", "`", "~", "|"):
         text = text.replace(char, f"\\{char}")
     return text.replace("@", "@\u200b")
+
+
+EASTER_EGG_YOU_RANG = (
+    "You rang? Ask me something silly. The real list stays sealed.",
+    "Ho ho. I am here, and the real draw is not on this table.",
+)
+EASTER_EGG_SLOW = (
+    "Easy there. The cocoa is still hot. Try that again in a little while.",
+)
+EASTER_EGG_FALLBACK = (
+    "The snow globe is cloudy, so here is the short version: the real list stays sealed.",
+    "My elf notes are in the other pocket. The real draw stays sealed.",
+)
+
+
+def easter_egg_you_rang() -> str:
+    return random.choice(EASTER_EGG_YOU_RANG)
+
+
+def easter_egg_slow() -> str:
+    return random.choice(EASTER_EGG_SLOW)
+
+
+def easter_egg_fallback() -> str:
+    return random.choice(EASTER_EGG_FALLBACK)
 
 
 def label(value: object, fallback: str) -> str:

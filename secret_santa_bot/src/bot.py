@@ -13,6 +13,8 @@ from flask import Flask
 
 from cogs.secret_santa import CustomHelpCommand, RateLimited, SecretSantaCog
 from database import DatabaseManager
+from easter_egg import answer, command_name_set, route
+from present import easter_egg_you_rang, safe
 from utils import logger, report_failure
 
 load_dotenv()
@@ -63,6 +65,47 @@ async def on_ready():
         except Exception as exc:
             report_failure("slash command sync", exc)
     await bot.change_presence(activity=discord.Game(name="Secret Santa"))
+
+
+def _command_names() -> set[str]:
+    pairs = [(command.name, command.aliases) for command in bot.commands]
+    help_name = getattr(bot.help_command, "name", None) or "help"
+    return command_name_set(pairs, help_name)
+
+
+async def _reply_egg(message, text: str) -> None:
+    await message.reply(safe(text)[:1900], allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.event
+async def on_message(message):
+    if getattr(getattr(message, "author", None), "bot", False):
+        return
+    try:
+        ctx = await bot.get_context(message)
+    except Exception as exc:
+        report_failure("easter egg context", exc)
+        await bot.process_commands(message)
+        return
+    invoked = getattr(getattr(ctx, "command", None), "name", None)
+    kind, question = route(
+        getattr(message, "content", "") or "",
+        getattr(bot.user, "id", None),
+        _command_names(),
+        invoked=invoked,
+    )
+    if kind in {"question", "empty"}:
+        try:
+            if kind == "question":
+                user_id = getattr(getattr(message, "author", None), "id", "unknown")
+                text = await answer(question, str(user_id))
+            else:
+                text = easter_egg_you_rang()
+            await _reply_egg(message, text)
+        except discord.HTTPException as exc:
+            report_failure("easter egg reply", exc)
+        return
+    await bot.process_commands(message)
 
 
 _USAGE_ERRORS = (
