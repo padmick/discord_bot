@@ -16,7 +16,7 @@ Prefix commands use `s!`. A space after the mark is fine, and `S!` works the sam
 - A command tutorial when someone asks, and a short hint the first time they use a related command
 - Gift progress: bought, shipped, received. A tracking link can go with the shipped step and is DMed to the recipient
 - Reminder settings the organizer edits in a form. The bot checks once a day and sends after the chosen number of days, weekly by default.
-- A welcome DM when someone joins, plus grouped help and an event guide
+- A short welcome DM when someone joins, plus grouped help and an event guide
 
 ## Prerequisites
 
@@ -87,7 +87,7 @@ Server management (organizer or a server admin):
 
 Participants:
 
-- `s!join` / `s!leave` - Joining sends a DM that explains the event. The first join also sends the tutorial. `s!help` groups the commands, and `s!info` shows the same guide.
+- `s!join` / `s!leave` - Joining sends a short welcome DM: fill in your profile, plus any rules or past matches. `s!help` groups the commands, and `s!info` shows the full guide. `s!tutorial` is there when someone asks.
 - `s!profile` - Private form for wishlist, notes, address, and the digital-gift toggle.
 - `s!setwishlist <text>` / `s!setaddress <text>` / `s!setbudget <text>` - In a server channel, the command message is deleted. The spending limit is optional.
 - `s!myinfo` - DM your profile.

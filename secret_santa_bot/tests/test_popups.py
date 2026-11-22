@@ -62,18 +62,18 @@ class _Ctx:
 
 async def test_the_first_command_shows_the_changelog_and_the_next_shows_one_hint():
     cog = _cog()
-    first = _Ctx(cog, "join")
+    first = _Ctx(cog, "status")
     await cog.cog_after_invoke(first)
     assert cog.dms == ["What's new"]
     assert first.sent == []
 
-    second = _Ctx(cog, "join")
+    second = _Ctx(cog, "status")
     await cog.cog_after_invoke(second)
-    assert cog.dms == ["What's new", "Fill in your profile"]
+    assert cog.dms == ["What's new", "What status shows"]
 
-    third = _Ctx(cog, "join")
+    third = _Ctx(cog, "status")
     await cog.cog_after_invoke(third)
-    assert cog.dms == ["What's new", "Fill in your profile"]
+    assert cog.dms == ["What's new", "What status shows"]
 
 
 async def test_tutorial_and_failed_commands_do_not_spend_a_hint():
@@ -83,10 +83,15 @@ async def test_tutorial_and_failed_commands_do_not_spend_a_hint():
     assert cog.dms == []
     assert cog.service.db.seen_changelog == {}
 
-    failed = _Ctx(cog, "join", failed=True)
+    joined = _Ctx(cog, "join")
+    await cog.cog_after_invoke(joined)
+    assert cog.dms == []
+    assert cog.service.db.seen_changelog == {}
+
+    failed = _Ctx(cog, "status", failed=True)
     await cog.cog_after_invoke(failed)
     assert cog.dms == ["What's new"]
-    assert cog.service.claim_command_tip("ada", "join") == "profile"
+    assert cog.service.claim_command_tip("ada", "status") == "privacy"
 
 
 async def test_help_outside_the_cog_can_show_the_changelog_once():
@@ -130,10 +135,10 @@ async def test_a_closed_dm_puts_the_popup_in_the_channel_and_slash_stays_ephemer
 
     response = Response()
     followup = Followup()
-    slash = _Ctx(cog, "join", interaction=SimpleNamespace(response=response, followup=followup))
+    slash = _Ctx(cog, "gift", interaction=SimpleNamespace(response=response, followup=followup))
     await cog.cog_after_invoke(slash)
     assert response.messages[0]["ephemeral"] is True
-    assert response.messages[0]["embed"].title == "Fill in your profile"
+    assert response.messages[0]["embed"].title == "One step at a time"
 
     again = _Ctx(
         cog,

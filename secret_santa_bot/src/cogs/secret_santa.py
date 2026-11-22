@@ -111,7 +111,7 @@ class SecretSantaCog(commands.Cog):
         raise RateLimited()
 
     async def cog_after_invoke(self, ctx):
-        if getattr(getattr(ctx, "command", None), "name", "") == "tutorial":
+        if getattr(getattr(ctx, "command", None), "name", "") in {"tutorial", "join"}:
             return
         if await self._offer_changelog(ctx):
             return
@@ -238,10 +238,10 @@ class SecretSantaCog(commands.Cog):
         )
         await _say(ctx, message)
 
-    @commands.hybrid_command(name="join", help="Join the open Secret Santa and get a DM that explains it")
+    @commands.hybrid_command(name="join", help="Join the open Secret Santa. A short welcome arrives by DM")
     @commands.guild_only()
     async def join(self, ctx):
-        """Join the open Secret Santa and get a DM that explains it."""
+        """Join the open Secret Santa. A short welcome arrives by DM."""
         result = await self.run(self.service.join, str(ctx.guild.id), str(ctx.author.id), ctx.author.display_name)
         welcome = (result.data or {}).get("welcome") if result.ok else None
         partners = (result.data or {}).get("past_partners") or []
@@ -251,21 +251,13 @@ class SecretSantaCog(commands.Cog):
         delivered = await self._dm_card(str(ctx.author.id), welcome, view=history) if welcome is not None else False
         if result.ok:
             log_event("JOIN", f"guild {ctx.guild.id} user {ctx.author.id}")
-        first_tutorial = False
-        if result.ok:
-            first_tutorial = await self.run(self.service.claim_tip, str(ctx.author.id), "seen-join-tutorial")
         if welcome is not None and delivered:
-            await _say(ctx, result.message + "\nThe guide is in your DMs.")
+            await _say(ctx, result.message + "\nThe welcome is in your DMs.")
         else:
             await _show(ctx, result)
         if welcome is not None and not delivered:
             await _say(ctx, "I couldn't DM the welcome note, so here it is.")
             await _send_card(ctx, welcome, view=history)
-        if first_tutorial:
-            walkthrough = tutorial_card(0)
-            tour = TutorialView(0)
-            if not await self._dm_card(str(ctx.author.id), walkthrough, view=tour):
-                await _send_card(ctx, walkthrough, view=tour)
 
     @commands.hybrid_command(name="leave", help="Leave the Secret Santa")
     @commands.guild_only()

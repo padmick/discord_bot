@@ -218,16 +218,17 @@ def welcome_card(
         fields.append(
             Field(
                 "Past matches in this server",
-                f"{names}\nChoose who to skip again on the menu. Anyone you leave off can be drawn. "
-                "`s!unexclude` drops someone after you skip them.",
+                f"{names}\nChoose who to skip again on the menu. Anyone you leave off can be drawn.",
             )
         )
-    fields.extend(guide_fields())
     return Card(
         title=f"Welcome to {event}"[:256],
-        description=f"{person}, you're in. This is the whole event, from your profile to the gift.",
+        description=(
+            f"{person}, you're in. Next, add a wishlist with `/profile`. "
+            "Add an address too, unless the gift can be digital."
+        ),
         fields=tuple(fields),
-        footer="s!help lists every command. s!tutorial walks through them. s!info shows this guide again.",
+        footer="s!help lists every command. s!tutorial walks through them. s!info shows the full guide.",
     )
 
 
@@ -238,7 +239,7 @@ def info_card() -> Card:
             "One open event per server. The organizer runs it and is not in the draw until they join."
         ),
         fields=guide_fields(),
-        footer="Join with s!join. The same guide arrives in a DM.",
+        footer="Joining with s!join sends a short welcome. This is the full guide.",
     )
 
 
@@ -463,8 +464,7 @@ def anonymous_card(direction: str, body: str, reply_as: str, image: str = "") ->
 TUTORIAL_PAGES: tuple[tuple[str, str], ...] = (
     (
         "Joining",
-        "In the server, run `s!join` or `/join`. A guide arrives by DM. "
-        "The first time you join, this walkthrough arrives too.\n"
+        "In the server, run `s!join` or `/join`. A short welcome arrives by DM.\n"
         "Next, fill in a wishlist. Add an address unless the gift is digital. `/profile` is the private form.\n"
         "`s!help` lists every command. `s!hint` shows a hint again. "
         "`s!tutorial` starts this walkthrough whenever you ask.",
@@ -564,8 +564,7 @@ TIPS: dict[str, tuple[str, str]] = {
     ),
     "ask-tutorial": (
         "A walkthrough when you want it",
-        "`s!tutorial` walks through the commands one page at a time. It also arrives the first time you join. "
-        "`s!hint` shows any hint again.",
+        "`s!tutorial` walks through the commands one page at a time. `s!hint` shows any hint again.",
     ),
     "setup": (
         "Set up the event",
@@ -645,7 +644,8 @@ def changelog_card() -> Card:
             ),
             Field(
                 "First join",
-                "The first time someone joins, the tutorial arrives. `s!tutorial`, `s!hint`, and `s!help` work anytime.",
+                "Joining sends a short welcome: fill in your profile, plus any rules or past matches. "
+                "`s!tutorial`, `s!hint`, and `s!help` work anytime.",
             ),
         ),
         footer="This shows once. A new note appears only when something new ships.",
@@ -691,8 +691,7 @@ def open_announcement_card(event: dict) -> Card:
     fields = [
         Field(
             "How to join",
-            "Run `s!join` or `/join` in this server. A guide arrives by DM. "
-            "The first time you join, a tutorial arrives so you can fill in your profile. "
+            "Run `s!join` or `/join` in this server. A short welcome arrives by DM. "
             "`s!help`, `s!tutorial`, and `s!hint` work anytime.",
         ),
         Field("Last day to join", _day_line(event.get("signup_deadline")), inline=True),

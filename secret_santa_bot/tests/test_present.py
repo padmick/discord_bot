@@ -84,21 +84,16 @@ def test_welcome_explains_the_event_and_neutralizes_mentions():
     text = card.text()
     assert "@everyone" not in text
     assert "Winter" in text
-    for topic in (
-        "wishlist",
-        "digital",
-        "s!start",
-        "s!message giftee",
-        "s!gift bought",
-        "s!reveal reveal",
-        "s!exclude",
-        "have not joined",
-    ):
-        assert topic in text
+    assert "wishlist" in text
+    assert "/profile" in text
+    assert "digital" in text
+    assert "s!start" not in text
+    assert "s!reveal" not in text
+    assert card.fields == ()
     assert card.title.startswith("Welcome to ")
     embed = to_embed(card)
     assert len(embed.title) <= 256
-    assert all(len(field.value) <= 1024 for field in embed.fields)
+    assert len(embed.description) <= 4096
     assert len(embed.fields) <= 25
 
 
@@ -119,11 +114,14 @@ def test_past_matches_are_grouped_with_getting_started():
     assert text.index("`s!exclude`") < text.index("`s!gift`")
 
 
-def test_info_uses_the_same_guide_as_the_welcome():
-    welcome = {field.name for field in welcome_card("Ada", "Party").fields}
+def test_info_keeps_the_full_guide():
     info = info_card()
-    assert welcome == {field.name for field in info.fields}
+    names = {field.name for field in info.fields}
+    assert "Your profile" in names
+    assert "The draw" in names
+    assert welcome_card("Ada", "Party").fields == ()
     assert "s!join" in info.footer
+    assert "short welcome" in info.footer
 
 
 def test_help_groups_commands_and_keeps_each_field_short():
