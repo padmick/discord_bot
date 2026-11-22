@@ -888,10 +888,10 @@ def test_signup_date_closes_joining_and_leaves_the_gift_deadline():
 async def test_setup_form_and_channel_menu_post_the_welcome():
     import discord
 
-    from views import AnnounceChannelSelect, SetupModal, SetupView
+    from views import AnnounceChannelPicker, SetupButton, SetupModal, SetupView
 
     svc, database = service()
-    svc.create_event("guild", "org", "Party")
+    svc.create_event("1", "2", "Party")
 
     class Cog:
         def __init__(self):
@@ -953,19 +953,32 @@ async def test_setup_form_and_channel_menu_post_the_welcome():
                 raise discord.Forbidden(SimpleNamespace(status=403, reason="missing"), "no")
             self.sent.append(kwargs)
 
+    class Client:
+        def get_cog(self, name):
+            assert name == "SecretSantaCog"
+            return cog
+
     cog = Cog()
-    view = SetupView(cog, "guild", "org")
-    opener = SimpleNamespace(user=SimpleNamespace(id="org"), response=Response(), followup=Followup(), guild=None)
-    await view.edit.callback(opener)
+    client = Client()
+    view = SetupView("1", "2")
+    button = next(item for item in view.children if isinstance(item, SetupButton))
+    opener = SimpleNamespace(
+        user=SimpleNamespace(id=2),
+        response=Response(),
+        followup=Followup(),
+        guild=None,
+        client=client,
+    )
+    await button.callback(opener)
     modal = opener.response.modals[0]
     assert isinstance(modal, SetupModal)
     modal.signup._value = date.today().isoformat()
     modal.deadline._value = "2026-12-20"
     modal.cap._value = "$25"
     modal.rules._value = "Handmade only"
-    submitted = SimpleNamespace(user=SimpleNamespace(id="org"), response=Response(), followup=Followup(), guild=None)
+    submitted = SimpleNamespace(user=SimpleNamespace(id=2), response=Response(), followup=Followup(), guild=None)
     await modal.on_submit(submitted)
-    stored = database.get_open_event("guild")
+    stored = database.get_open_event("1")
     assert stored["spending_cap"] == "$25"
     assert stored["rules"] == "Handmade only"
     assert "Setup saved" in submitted.followup.messages[-1][0]
@@ -977,9 +990,15 @@ async def test_setup_form_and_channel_menu_post_the_welcome():
         return guild.get_channel(channel_id)
 
     guild.fetch_channel = fetch_channel
-    select = next(item for item in view.children if isinstance(item, AnnounceChannelSelect))
-    select._values = [SimpleNamespace(id=555)]
-    posted = SimpleNamespace(user=SimpleNamespace(id="org"), response=Response(), followup=Followup(), guild=guild)
+    select = next(item for item in view.children if isinstance(item, AnnounceChannelPicker))
+    select.item._values = [SimpleNamespace(id=555)]
+    posted = SimpleNamespace(
+        user=SimpleNamespace(id=2),
+        response=Response(),
+        followup=Followup(),
+        guild=guild,
+        client=client,
+    )
     await select.callback(posted)
     assert channel.sent
     posted_embed = channel.sent[0]["embed"]
@@ -988,18 +1007,87 @@ async def test_setup_form_and_channel_menu_post_the_welcome():
         + [f"{field.name} {field.value}" for field in posted_embed.fields]
     )
     assert "s!join" in posted_text
-    assert database.get_open_event("guild")["announce_channel_id"] == "555"
+    assert database.get_open_event("1")["announce_channel_id"] == "555"
     assert "Posted the open announcement" in posted.followup.messages[-1][0]
 
-    stranger = SimpleNamespace(user=SimpleNamespace(id="11"), response=Response(), followup=Followup(), guild=guild)
+    stranger = SimpleNamespace(
+        user=SimpleNamespace(id=11),
+        response=Response(),
+        followup=Followup(),
+        guild=guild,
+        client=client,
+    )
     await select.callback(stranger)
     assert "belongs to the person" in stranger.response.messages[0]
 
     blocked = Channel(555, fail=True)
     guild.get_channel = lambda channel_id: blocked
-    refused = SimpleNamespace(user=SimpleNamespace(id="org"), response=Response(), followup=Followup(), guild=guild)
+    refused = SimpleNamespace(
+        user=SimpleNamespace(id=2),
+        response=Response(),
+        followup=Followup(),
+        guild=guild,
+        client=client,
+    )
     await select.callback(refused)
     assert "can't post" in refused.followup.messages[-1][0]
+
+
+async def test_setup_button_answers_after_the_sending_view_is_gone():
+    """The form still opens when Discord delivers the click to a new process."""
+    import discord
+    from discord.components import ActionRow
+    from discord.ui.view import ViewStore
+
+    from views import SetupButton, SetupView
+
+    view = SetupView("42", "7")
+    assert view.timeout is None
+    button = next(child for child in view.children if isinstance(child, SetupButton))
+    rows = [ActionRow(row) for row in view.to_components()]
+
+    class Response:
+        def __init__(self):
+            self.done = False
+            self.messages = []
+            self.modals = []
+
+        def is_done(self):
+            return self.done
+
+        async def send_message(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+            self.done = True
+
+        async def send_modal(self, modal):
+            self.modals.append(modal)
+            self.done = True
+
+    class Client:
+        def get_cog(self, name):
+            assert name == "SecretSantaCog"
+            return SimpleNamespace(name=name)
+
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=7),
+        response=Response(),
+        message=SimpleNamespace(id=99, components=rows),
+        data={"custom_id": button.custom_id, "component_type": discord.ComponentType.button.value},
+        client=Client(),
+    )
+    store = ViewStore(SimpleNamespace())
+    store.add_dynamic_items(SetupButton)
+    await store.schedule_dynamic_item_call(
+        discord.ComponentType.button.value,
+        SetupButton,
+        interaction,
+        button.custom_id,
+        button.template.fullmatch(button.custom_id),
+    )
+    assert len(interaction.response.modals) == 1
+    assert interaction.response.modals[0].guild_id == "42"
+    assert interaction.response.modals[0].user_id == "7"
 
 
 async def test_past_partner_menu_skips_only_the_people_you_choose():

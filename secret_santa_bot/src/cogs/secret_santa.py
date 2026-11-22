@@ -38,7 +38,16 @@ from services import (
     resolve_dm_events,
 )
 from utils import log_event, report_failure
-from views import NotificationSettingsView, PastPartnerView, ProfileView, ReplyView, SetupView, TutorialView
+from views import (
+    AnnounceChannelPicker,
+    NotificationSettingsView,
+    PastPartnerView,
+    ProfileView,
+    ReplyView,
+    SetupButton,
+    SetupView,
+    TutorialView,
+)
 
 
 class RateLimited(commands.CommandError):
@@ -85,10 +94,12 @@ class SecretSantaCog(commands.Cog):
         self.bot.add_view(ReplyView("gifter"))
         self.bot.add_view(ReplyView("giftee"))
         self.bot.add_view(TutorialView(0))
+        self.bot.add_dynamic_items(SetupButton, AnnounceChannelPicker)
         self.daily_reminders.start()
 
     def cog_unload(self):
         self.daily_reminders.cancel()
+        self.bot.remove_dynamic_items(SetupButton, AnnounceChannelPicker)
 
     async def cog_before_invoke(self, ctx):
         if _is_admin(ctx):
@@ -197,7 +208,7 @@ class SecretSantaCog(commands.Cog):
         await _send_card(
             ctx,
             setup_card(event, result.message),
-            view=SetupView(self, str(ctx.guild.id), str(ctx.author.id)),
+            view=SetupView(str(ctx.guild.id), str(ctx.author.id)),
         )
 
     @commands.hybrid_command(name="setup", help="Open the event setup guide again")
@@ -213,7 +224,7 @@ class SecretSantaCog(commands.Cog):
         if not result.ok or result.card is None:
             await _show(ctx, result)
             return
-        await _send_card(ctx, result.card, view=SetupView(self, str(ctx.guild.id), str(ctx.author.id)))
+        await _send_card(ctx, result.card, view=SetupView(str(ctx.guild.id), str(ctx.author.id)))
 
     @commands.hybrid_command(name="announce", help="Post that signup is open in a channel")
     @commands.guild_only()

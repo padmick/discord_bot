@@ -397,66 +397,135 @@ class SetupModal(discord.ui.Modal, title="Event setup"):
         await report_component_failure(f"setup form guild {self.guild_id}", interaction, error)
 
 
-class AnnounceChannelSelect(discord.ui.ChannelSelect):
-    def __init__(self):
+def _secret_santa_cog(interaction):
+    client = getattr(interaction, "client", None)
+    getter = getattr(client, "get_cog", None)
+    if getter is None:
+        return None
+    return getter("SecretSantaCog")
+
+
+class SetupButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"ss:setup:(?P<guild_id>[0-9]+):(?P<user_id>[0-9]+)",
+):
+    """Opens the setup form from the button id, including after a restart.
+
+    A normal view is dropped when the process restarts or its timer ends.
+    Discord then shows "didn't respond in time" because nothing acknowledges
+    the click. The guild and the opener are in the custom id, so this button
+    can answer without that view.
+    """
+
+    def __init__(self, guild_id: str, user_id: str):
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
         super().__init__(
-            placeholder="Channel that should hear signup is open",
-            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
-            min_values=1,
-            max_values=1,
+            discord.ui.Button(
+                label="Set dates, cap, and rules",
+                style=discord.ButtonStyle.primary,
+                custom_id=f"ss:setup:{self.guild_id}:{self.user_id}",
+            )
         )
 
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        del interaction, item
+        return cls(match["guild_id"], match["user_id"])
+
     async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        if not isinstance(view, SetupView):
-            await interaction.response.send_message("This menu is not available right now.", ephemeral=True)
-            return
-        if str(interaction.user.id) != view.user_id:
-            await interaction.response.send_message(
-                "This guide belongs to the person who opened it.",
-                ephemeral=True,
-            )
-            return
-        channel = await _resolve_text_channel(interaction, self.values[0])
-        if channel is None:
-            await interaction.response.send_message("Choose a text channel in this server.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
         try:
-            _ok, message = await view.cog.post_open_announcement(
-                view.guild_id,
+            if interaction.response.is_done():
+                return
+            if str(interaction.user.id) != self.user_id:
+                await interaction.response.send_message(
+                    "This guide belongs to the person who opened it.",
+                    ephemeral=True,
+                )
+                return
+            cog = _secret_santa_cog(interaction)
+            if cog is None:
+                await interaction.response.send_message(
+                    "Secret Santa is not available right now.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_modal(SetupModal(cog, self.guild_id, self.user_id))
+        except discord.InteractionResponded:
+            return
+        except Exception as exc:
+            await report_component_failure(f"setup button guild {self.guild_id}", interaction, exc)
+
+
+class AnnounceChannelPicker(
+    discord.ui.DynamicItem[discord.ui.ChannelSelect],
+    template=r"ss:announce:(?P<guild_id>[0-9]+):(?P<user_id>[0-9]+)",
+):
+    """Posts the open announcement from the menu id, including after a restart."""
+
+    def __init__(self, guild_id: str, user_id: str):
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        super().__init__(
+            discord.ui.ChannelSelect(
+                placeholder="Channel that should hear signup is open",
+                channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+                min_values=1,
+                max_values=1,
+                custom_id=f"ss:announce:{self.guild_id}:{self.user_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        del interaction, item
+        return cls(match["guild_id"], match["user_id"])
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            if interaction.response.is_done():
+                return
+            if str(interaction.user.id) != self.user_id:
+                await interaction.response.send_message(
+                    "This guide belongs to the person who opened it.",
+                    ephemeral=True,
+                )
+                return
+            cog = _secret_santa_cog(interaction)
+            if cog is None:
+                await interaction.response.send_message(
+                    "Secret Santa is not available right now.",
+                    ephemeral=True,
+                )
+                return
+            selected = self.item.values[0] if self.item.values else None
+            await interaction.response.defer(ephemeral=True)
+            channel = await _resolve_text_channel(interaction, selected)
+            if channel is None:
+                await interaction.followup.send("Choose a text channel in this server.", ephemeral=True)
+                return
+            _ok, message = await cog.post_open_announcement(
+                self.guild_id,
                 str(interaction.user.id),
                 _interaction_is_admin(interaction),
                 channel,
             )
             await interaction.followup.send(message, ephemeral=True)
+        except discord.InteractionResponded:
+            return
         except Exception as exc:
-            report_failure(f"announce guild {view.guild_id}", exc)
-            await interaction.followup.send("The announcement could not be posted.", ephemeral=True)
+            await report_component_failure(f"announce guild {self.guild_id}", interaction, exc)
 
 
 class SetupView(discord.ui.View):
-    def __init__(self, cog, guild_id: str, user_id: str):
-        super().__init__(timeout=180)
-        self.cog = cog
+    def __init__(self, guild_id: str, user_id: str):
+        # No timer. The buttons are dynamic items, so a click still has a
+        # listener after this process restarts.
+        super().__init__(timeout=None)
         self.guild_id = str(guild_id)
         self.user_id = str(user_id)
-        self.add_item(AnnounceChannelSelect())
-
-    @discord.ui.button(label="Set dates, cap, and rules", style=discord.ButtonStyle.primary)
-    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        del button
-        if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message(
-                "This guide belongs to the person who opened it.",
-                ephemeral=True,
-            )
-            return
-        await interaction.response.send_modal(SetupModal(self.cog, self.guild_id, self.user_id))
-
-    async def on_error(self, interaction, error, item, /) -> None:
-        del item
-        await report_component_failure(f"SetupView guild {self.guild_id}", interaction, error)
+        self.add_item(AnnounceChannelPicker(self.guild_id, self.user_id))
+        self.add_item(SetupButton(self.guild_id, self.user_id))
 
 
 async def _resolve_text_channel(interaction, selected):
