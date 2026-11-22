@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import random
 from datetime import date, timedelta
+from itertools import combinations, permutations, product
 from types import SimpleNamespace
 
 import psycopg2
 import pytest
 
 from bot import app, runtime
-from cogs.secret_santa import SecretSantaCog
+from cogs.secret_santa import SecretSantaCog, _match_card
 from database import DatabaseManager
+from matching import is_derangement
 from services import EventService, RateLimiter
 from views import ReplyModal
 
@@ -35,8 +37,8 @@ def db(postgres_url):
 
 
 class Guild:
-    def __init__(self):
-        self.id = 9001
+    def __init__(self, guild_id: int = 9001):
+        self.id = guild_id
 
 
 class Person:
@@ -468,3 +470,410 @@ async def test_one_event_exercises_every_feature(db):
         assert response.get_json()["status"] == "healthy"
     finally:
         runtime["db"] = previous
+
+
+STRESS_GUILD = "stress"
+
+
+def _service(db, seed: int) -> EventService:
+    svc = EventService(db, rng=random.Random(seed))
+    if db.get_open_event(STRESS_GUILD) is not None:
+        assert svc.cancel(STRESS_GUILD, "org", True).ok
+    assert svc.create_event(STRESS_GUILD, "org", "Stress").ok
+    assert svc.set_event_copy(STRESS_GUILD, "org", True, "rules", "No cash").ok
+    assert svc.set_event_copy(STRESS_GUILD, "org", True, "spending_cap", "$20").ok
+    return svc
+
+
+def _fill(svc: EventService, user_id: str, *, digital: bool, window: bool) -> str:
+    assert svc.join(STRESS_GUILD, user_id, f"Person {user_id}").ok
+    again = svc.join(STRESS_GUILD, user_id, f"Person {user_id}")
+    assert again.ok and "already in" in again.message
+    assert svc.set_text_field(STRESS_GUILD, user_id, "wishlist", f"Wish {user_id}", False).ok
+    if digital:
+        assert svc.update_profile(STRESS_GUILD, user_id, digital_only=True).ok
+    else:
+        assert svc.set_text_field(STRESS_GUILD, user_id, "address", f"{user_id} North Street", False).ok
+    if not window:
+        return ""
+    text = f"Away-{user_id}-only"
+    assert svc.set_text_field(STRESS_GUILD, user_id, "delivery_window", text, False).ok
+    return text
+
+
+def _check_draw(started, user_ids, windows, digital, blocked):
+    assert started.ok, started.message
+    notes = started.data["notifications"]
+    assignment = {note["giver_id"]: note["receiver_id"] for note in notes}
+    assert is_derangement(assignment, user_ids, blocked)
+    for note in notes:
+        receiver = note["receiver_id"]
+        card = _match_card(note).text()
+        assert f"Wish {receiver}" in card
+        assert "No cash" in card
+        assert "$20 for this event" in card
+        for other, text in windows.items():
+            if not text:
+                continue
+            if other == receiver:
+                assert text in card
+                assert "Delivery window" in card
+            else:
+                assert text not in card
+        if not windows.get(receiver):
+            assert "Delivery window" not in card
+        if digital.get(receiver):
+            assert "Digital gift" in card
+            assert f"{receiver} North Street" not in card
+        else:
+            assert f"{receiver} North Street" in card
+    return assignment
+
+
+def _close(svc: EventService) -> None:
+    if svc.db.get_open_event(STRESS_GUILD) is not None:
+        assert svc.cancel(STRESS_GUILD, "org", True).ok
+
+
+def test_every_joining_combination_draws(db):
+    """Every subset of a six-person pool, and every join order up to four people."""
+    pool = [f"p{i}" for i in range(6)]
+    drawn = 0
+    for size in range(2, len(pool) + 1):
+        for group in combinations(pool, size):
+            svc = _service(db, seed=size + drawn)
+            try:
+                windows = {}
+                digital = {}
+                for index, user_id in enumerate(group):
+                    digital[user_id] = index % 3 == 0
+                    windows[user_id] = _fill(
+                        svc,
+                        user_id,
+                        digital=digital[user_id],
+                        window=index % 2 == 1,
+                    )
+                event = db.get_open_event(STRESS_GUILD)
+                assert len(db.list_participants(event["id"])) == size
+                started = svc.start(STRESS_GUILD, "org", True)
+                _check_draw(started, list(group), windows, digital, set())
+                drawn += 1
+            finally:
+                _close(svc)
+    assert drawn == 57
+
+    orders = 0
+    for size in range(2, 5):
+        for order in permutations([f"o{i}" for i in range(size)]):
+            svc = _service(db, seed=1)
+            try:
+                windows = {}
+                digital = {}
+                for user_id in order:
+                    digital[user_id] = False
+                    windows[user_id] = _fill(svc, user_id, digital=False, window=user_id.endswith("1"))
+                started = svc.start(STRESS_GUILD, "org", True)
+                _check_draw(started, list(order), windows, digital, set())
+                orders += 1
+            finally:
+                _close(svc)
+    assert orders == 32
+
+    alone = _service(db, seed=0)
+    try:
+        _fill(alone, "solo", digital=False, window=True)
+        refused = alone.start(STRESS_GUILD, "org", True)
+        assert refused.code == "too_small"
+        assert db.get_open_event(STRESS_GUILD)["phase"] == "signup"
+    finally:
+        _close(alone)
+
+
+def test_every_profile_combination_for_each_small_group(db):
+    """Physical or digital, with or without a delivery window, for every person."""
+    covered = 0
+    for size in range(2, 6):
+        for seed, choices in enumerate(product(range(4), repeat=size)):
+            svc = _service(db, seed=seed)
+            try:
+                user_ids = [f"u{i}" for i in range(size)]
+                windows = {}
+                digital = {}
+                for index, choice in enumerate(choices):
+                    user_id = user_ids[index]
+                    digital[user_id] = choice >= 2
+                    windows[user_id] = _fill(
+                        svc,
+                        user_id,
+                        digital=digital[user_id],
+                        window=choice % 2 == 1,
+                    )
+                started = svc.start(STRESS_GUILD, "org", True)
+                _check_draw(started, user_ids, windows, digital, set())
+                covered += 1
+            finally:
+                _close(svc)
+    assert covered == 16 + 64 + 256 + 1024
+
+    for size in (6, 8, 10, 12):
+        patterns = [
+            tuple(0 for _ in range(size)),
+            tuple(1 for _ in range(size)),
+            tuple(2 for _ in range(size)),
+            tuple(3 for _ in range(size)),
+            tuple(index % 4 for index in range(size)),
+        ]
+        for index in range(size):
+            only_window = [0] * size
+            only_window[index] = 1
+            patterns.append(tuple(only_window))
+            only_digital = [1] * size
+            only_digital[index] = 2
+            patterns.append(tuple(only_digital))
+        for seed, choices in enumerate(patterns):
+            svc = _service(db, seed=seed + size)
+            try:
+                user_ids = [f"b{i}" for i in range(size)]
+                windows = {}
+                digital = {}
+                for index, choice in enumerate(choices):
+                    user_id = user_ids[index]
+                    digital[user_id] = choice >= 2
+                    windows[user_id] = _fill(
+                        svc,
+                        user_id,
+                        digital=digital[user_id],
+                        window=choice % 2 == 1,
+                    )
+                started = svc.start(STRESS_GUILD, "org", True)
+                assignment = _check_draw(started, user_ids, windows, digital, set())
+                edited = user_ids[0]
+                giver = next(person for person, receiver in assignment.items() if receiver == edited)
+                updated = svc.set_text_field(
+                    STRESS_GUILD,
+                    edited,
+                    "delivery_window",
+                    f"Home-after-{edited}",
+                    False,
+                )
+                assert updated.data["notify_gifter_id"] == giver
+                assert updated.data["delivery_window"] == f"Home-after-{edited}"
+                cleared = svc.set_text_field(STRESS_GUILD, edited, "delivery_window", "clear", False)
+                assert cleared.data["notify_gifter_id"] == giver
+                assert cleared.data["delivery_window"] == ""
+            finally:
+                _close(svc)
+
+
+def test_locks_and_removals_across_group_sizes(db):
+    locked_draws = 0
+    for size in range(4, 9):
+        people = [f"l{i}" for i in range(size)]
+        for left, right in combinations(people, 2):
+            svc = _service(db, seed=size)
+            try:
+                windows = {}
+                digital = {}
+                for user_id in people:
+                    digital[user_id] = False
+                    windows[user_id] = _fill(svc, user_id, digital=False, window=user_id.endswith("1"))
+                assert svc.block_pair(STRESS_GUILD, "org", True, left, "Left", right, "Right").ok
+                blocked = {(left, right), (right, left)}
+                started = svc.start(STRESS_GUILD, "org", True)
+                assignment = _check_draw(started, people, windows, digital, blocked)
+                assert assignment[left] != right and assignment[right] != left
+                locked_draws += 1
+            finally:
+                _close(svc)
+    assert locked_draws == 6 + 10 + 15 + 21 + 28
+
+    trio = [f"t{i}" for i in range(3)]
+    for left, right in combinations(trio, 2):
+        svc = _service(db, seed=3)
+        try:
+            for user_id in trio:
+                _fill(svc, user_id, digital=False, window=False)
+            assert svc.block_pair(STRESS_GUILD, "org", True, left, "Left", right, "Right").ok
+            assert svc.start(STRESS_GUILD, "org", True).code == "no_draw"
+        finally:
+            _close(svc)
+
+    for size, block_all in ((2, True), (3, True), (4, True)):
+        svc = _service(db, seed=size)
+        try:
+            people = [f"x{i}" for i in range(size)]
+            for user_id in people:
+                _fill(svc, user_id, digital=False, window=False)
+            if block_all:
+                for left, right in combinations(people, 2):
+                    assert svc.block_pair(STRESS_GUILD, "org", True, left, "Left", right, "Right").ok
+            refused = svc.start(STRESS_GUILD, "org", True)
+            assert refused.code == "no_draw"
+            assert db.get_open_event(STRESS_GUILD)["phase"] == "signup"
+        finally:
+            _close(svc)
+
+    for size in range(4, 7):
+        svc = _service(db, seed=size)
+        try:
+            people = [f"y{i}" for i in range(size)]
+            for user_id in people:
+                _fill(svc, user_id, digital=False, window=False)
+            stranded = people[0]
+            for other in people[1:]:
+                assert svc.block_pair(STRESS_GUILD, "org", True, stranded, "A", other, "B").ok
+            assert svc.start(STRESS_GUILD, "org", True).code == "no_draw"
+        finally:
+            _close(svc)
+
+    pair = _service(db, seed=2)
+    try:
+        for user_id in ("a", "b"):
+            _fill(pair, user_id, digital=False, window=True)
+        assert pair.start(STRESS_GUILD, "org", True).ok
+        refused = pair.remove(STRESS_GUILD, "org", "a", True)
+        assert refused.code == "no_draw"
+        assert set(pairs_of(db, STRESS_GUILD)) == {"a", "b"}
+    finally:
+        _close(pair)
+
+    for size in range(3, 9):
+        for remove_at in range(size):
+            svc = _service(db, seed=size + remove_at)
+            try:
+                people = [f"r{i}" for i in range(size)]
+                windows = {}
+                digital = {user_id: index % 3 == 0 for index, user_id in enumerate(people)}
+                for user_id, is_digital in digital.items():
+                    windows[user_id] = _fill(svc, user_id, digital=is_digital, window=not is_digital)
+                assert svc.start(STRESS_GUILD, "org", True).ok
+                target = people[remove_at]
+                removed = svc.remove(STRESS_GUILD, "org", target, True)
+                assert removed.ok
+                remaining = [user_id for user_id in people if user_id != target]
+                assignment = pairs_of(db, STRESS_GUILD)
+                assert target not in assignment and target not in assignment.values()
+                assert is_derangement(assignment, remaining, set())
+                for note in removed.data["changed"]:
+                    card = _match_card(note).text()
+                    receiver = note["receiver_id"]
+                    assert receiver != target
+                    if windows.get(receiver):
+                        assert windows[receiver] in card
+                    else:
+                        assert "Delivery window" not in card
+            finally:
+                _close(svc)
+
+
+def _boot(db, org, people, guild_id):
+    guild = Guild(guild_id)
+
+    class Bot:
+        def get_user(self, snowflake):
+            return people.get(int(snowflake))
+
+        async def fetch_user(self, snowflake):
+            return self.get_user(snowflake)
+
+        def get_cog(self, name):
+            return cog if name == "SecretSantaCog" else None
+
+    bot = Bot()
+    cog = SecretSantaCog.__new__(SecretSantaCog)
+    cog.bot = bot
+    cog.guild = guild
+    cog.service = EventService(db, rng=random.Random(guild_id))
+    cog.rate_limiter = RateLimiter()
+    return cog, guild, bot
+
+
+def _match_embed(person: Person) -> str:
+    cards = [item for item in person.sent if item.get("embed") is not None and item["embed"].title == "Your match"]
+    assert cards, person.display_name
+    return plain(cards[-1:])
+
+
+async def test_command_path_for_each_group_size(db):
+    org = Person(7, "Organizer", admin=True)
+    for size in range(2, 13):
+        roster = [Person(size * 100 + index, f"Member {index}") for index in range(size)]
+        people = {person.id: person for person in (org, *roster)}
+        cog, guild, bot = _boot(db, org, people, 9100 + size)
+        created = await invoke(cog, SecretSantaCog.create, org, name=f"Group of {size}")
+        assert f"Group of {size}" in plain(created.sent)
+        await invoke(cog, SecretSantaCog.rules, org, text="No cash")
+        await invoke(cog, SecretSantaCog.cap, org, text="$20")
+
+        windows = {}
+        for index, person in enumerate(roster):
+            joined = await invoke(cog, SecretSantaCog.join, person)
+            assert "welcome is in your DMs" in plain(joined.sent)
+            repeat = await invoke(cog, SecretSantaCog.join, person)
+            assert "already in" in plain(repeat.sent).lower()
+            welcomes = [
+                item
+                for item in person.sent
+                if item.get("embed") is not None and str(item["embed"].title).startswith("Welcome")
+            ]
+            assert len(welcomes) == 1
+            await invoke(cog, SecretSantaCog.setwishlist, person, wishlist=f"Wish {person.id}")
+            if index % 3 == 0:
+                assert cog.service.update_profile(str(guild.id), str(person.id), digital_only=True).ok
+                windows[str(person.id)] = ""
+            else:
+                await invoke(cog, SecretSantaCog.setaddress, person, address=f"{person.id} North Street")
+                if index % 2 == 1:
+                    text = f"Away-{person.id}-only"
+                    await invoke(cog, SecretSantaCog.setwindow, person, text=text)
+                    windows[str(person.id)] = text
+                else:
+                    windows[str(person.id)] = ""
+
+        if size >= 5:
+            await invoke(cog, SecretSantaCog.block, org, roster[0], roster[1])
+
+        started = await invoke(cog, SecretSantaCog.start, org)
+        assert "Secret Santa has begun" in plain(started.sent)
+        assignment = pairs_of(db, guild.id)
+        blocked = set()
+        if size >= 5:
+            blocked = {(str(roster[0].id), str(roster[1].id)), (str(roster[1].id), str(roster[0].id))}
+        user_ids = [str(person.id) for person in roster]
+        assert is_derangement(assignment, user_ids, blocked)
+        for receiver_id, window in windows.items():
+            giver = people[int(next(person for person, receiver in assignment.items() if receiver == receiver_id))]
+            card = _match_embed(giver)
+            assert f"Wish {receiver_id}" in card
+            assert "No cash" in card
+            assert "$20 for this event" in card
+            if window:
+                assert window in card
+            else:
+                assert "Delivery window" not in card
+            if int(receiver_id) % 100 % 3 == 0:
+                assert "Digital gift" in card
+            else:
+                assert f"{receiver_id} North Street" in card
+
+        window_owner = next(person for person in roster if windows[str(person.id)])
+        new_window = f"Home-after-{window_owner.id}"
+        await invoke(cog, SecretSantaCog.setwindow, window_owner, text=new_window)
+        giver = people[int(next(person for person, receiver in assignment.items() if receiver == str(window_owner.id)))]
+        assert new_window in inbox(giver)
+        assert "Your giftee updated their delivery window" in inbox(giver)
+
+        if size == 2:
+            refused = await invoke(cog, SecretSantaCog.remove, org, roster[0])
+            assert "nobody was removed" in plain(refused.sent).lower()
+            assert set(pairs_of(db, guild.id)) == {str(person.id) for person in roster}
+        else:
+            target = roster[-1]
+            await invoke(cog, SecretSantaCog.remove, org, target)
+            assert "You were removed" in inbox(target)
+            remaining = pairs_of(db, guild.id)
+            assert str(target.id) not in remaining and str(target.id) not in remaining.values()
+            assert is_derangement(remaining, [user_id for user_id in user_ids if user_id != str(target.id)], blocked)
+
+        await invoke(cog, SecretSantaCog.cancel, org)
+        assert db.get_open_event(str(guild.id)) is None
