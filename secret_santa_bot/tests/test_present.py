@@ -4,7 +4,9 @@ from datetime import date
 
 from cogs.secret_santa import CustomHelpCommand, SecretSantaCog
 from present import (
+    announcement_card,
     anonymous_card,
+    Card,
     changelog_card,
     image_url,
     note_content,
@@ -26,6 +28,7 @@ from present import (
     shipping_reminder_card,
     status_card,
     to_embed,
+    wishlist_update_card,
     welcome_card,
 )
 from services import EventService, assignment_text
@@ -199,6 +202,20 @@ def test_roster_reminders_notes_and_reveal_layout():
     assert attached.description == "Sent a GIF."
     assert attached.image.endswith("note.gif?ex=1")
     assert image_url("https://tenor.com/view/cat-gif-12345") == ""
+    assert image_url("https://media.tenor.com/abc/cat") == "https://media.tenor.com/abc/cat"
+    assert image_url("https://giphy.com/embed/xyz") == "https://i.giphy.com/xyz.gif"
+    assert image_url("not a url") == ""
+    rendered, picture = note_content(
+        "See https://cdn.example/a.gif, then https://cdn.example/b.png and <a:spark:123456789012345678>."
+    )
+    assert picture == "https://cdn.example/a.gif"
+    assert "<https://cdn.example/b.png>" in rendered
+    assert "<a:spark:123456789012345678>" in rendered
+    assert "cdn.example/b.png" not in picture
+    blank = to_embed(Card(title="Plain", image="javascript:alert(1)"))
+    assert not blank.image.url
+    assert announcement_card("  ").description == "The organizer sent an empty announcement."
+    assert "books" in wishlist_update_card("books").text()
     assert note_content("A gift 🎁")[0] == "A gift 🎁"
     first = tutorial_card(0)
     assert first.title == "Tutorial · Joining"

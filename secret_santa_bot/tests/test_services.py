@@ -808,6 +808,39 @@ def test_health_payload_reports_a_down_database():
     assert body["status"] == "healthy"
 
 
+def test_locked_roster_broadcast_and_bad_feedback_are_refused():
+    svc, _database = service()
+    assert svc.broadcast_recipients("guild", "org", False).code == "no_event"
+    svc.create_event("guild", "org", "Party")
+    assert svc.broadcast_recipients("guild", "org", False).code == "empty"
+    assert svc.missing_profile_targets("guild", "stranger", False).code == "forbidden"
+    assert svc.missing_profile_targets("guild", "org", True).data["users"] == []
+    ready_participant(svc, "guild", "ada", "Ada")
+    svc.join("guild", "bea", "Bea")
+    assert svc.lock("guild", "ada", True).ok
+    assert svc.leave("guild", "ada").code == "closed"
+    assert svc.unlock("guild", "ada", False).code == "forbidden"
+    assert svc.unlock("guild", "org", False).ok
+    assert svc.lock("guild", "org", False).ok
+    assert svc.lock("guild", "org", False).code == "bad_phase"
+    assert svc.unlock("guild", "org", False).ok
+    assert svc.unlock("guild", "org", False).code == "bad_phase"
+
+    ready = svc.missing_profile_targets("guild", "org", False)
+    assert {person["user_id"] for person in ready.data["users"]} == {"bea"}
+    recipients = svc.broadcast_recipients("guild", "org", False)
+    assert set(recipients.data["user_ids"]) == {"ada", "bea"}
+
+    assert svc.submit_feedback("guild", "ada", "complaint", "hello").code == "bad_kind"
+    assert svc.skip_past_matches("guild", "ada", [("ada", "Ada"), ("", "nobody")]) .code == "bad_exclusion"
+    try:
+        svc.mark_reminded(1, "hourly", date(2026, 12, 1))
+    except ValueError as error:
+        assert "hourly" in str(error)
+    else:
+        raise AssertionError("unknown reminder kind was accepted")
+
+
 def test_root_and_health_share_the_database_status():
     from bot import app, runtime
 

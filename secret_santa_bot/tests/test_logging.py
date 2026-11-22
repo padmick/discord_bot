@@ -96,6 +96,53 @@ async def test_private_exclude_points_at_the_profile_menu(capsys):
     assert sent[0] == "Run that command in the server."
 
 
+async def test_missing_and_unreadable_values_point_at_help(capsys):
+    missing = _context("message")
+    await on_command_error(
+        missing,
+        commands.MissingRequiredArgument(SimpleNamespace(name="text", displayed_name="text")),
+    )
+    assert "s!help" in missing.sent[0]
+
+    bad = _context("deadline")
+    await on_command_error(bad, commands.BadArgument())
+    assert "s!help" in bad.sent[0]
+
+    blocked = _context("start")
+    await on_command_error(blocked, commands.CheckFailure("Only an organizer can do that."))
+    assert blocked.sent[0] == "Only an organizer can do that."
+    err = capsys.readouterr().err
+    assert "ERROR" not in err
+    assert "CheckFailure" in err
+
+
+async def test_slash_error_uses_the_followup_after_a_response():
+    sent = []
+
+    class Response:
+        def is_done(self):
+            return True
+
+        async def send_message(self, message, ephemeral=False):
+            del ephemeral
+            sent.append(("response", message))
+
+    class Followup:
+        async def send(self, message, ephemeral=False):
+            del ephemeral
+            sent.append(("followup", message))
+
+    interaction = SimpleNamespace(
+        command=SimpleNamespace(name="idea", qualified_name="idea"),
+        guild_id=9,
+        user=SimpleNamespace(id=4),
+        response=Response(),
+        followup=Followup(),
+    )
+    await on_app_command_error(interaction, RuntimeError("database down"))
+    assert sent == [("followup", "database down")]
+
+
 async def test_prefix_profile_exception_is_logged_and_shown(capsys):
     database_error = _raised('column reference "id" is ambiguous')
     ctx = _context()
