@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import discord
 
 from present import to_embed, tutorial_card, tutorial_page_count, tutorial_page_from_footer
@@ -197,111 +200,306 @@ class DeliveryWindowModal(discord.ui.Modal, title="Delivery window"):
         )
 
 
-class PastMatchSelect(discord.ui.UserSelect):
-    """Server members, including people who have not joined this Secret Santa."""
+def _component_cog(interaction, stored):
+    if stored is not None:
+        return stored
+    return _secret_santa_cog(interaction)
 
-    def __init__(self):
+
+_click_lock = asyncio.Lock()
+_seen_clicks: dict[int, float] = {}
+
+
+def _click_key(interaction) -> int:
+    key = getattr(interaction, "id", None)
+    if isinstance(key, int):
+        return key
+    response = getattr(interaction, "response", None)
+    return id(response if response is not None else interaction)
+
+
+async def _first_dispatch(interaction) -> bool:
+    """One click can reach both the live view and the dynamic item.
+
+    Discord runs both when the message view is still in memory. A second run
+    of a toggle would undo the first. The same interaction id is kept for a
+    few minutes so the later task does nothing.
+    """
+    key = _click_key(interaction)
+    now = time.monotonic()
+    async with _click_lock:
+        stale = [item for item, seen in _seen_clicks.items() if now - seen > 900]
+        for item in stale:
+            del _seen_clicks[item]
+        if key in _seen_clicks:
+            return False
+        _seen_clicks[key] = now
+        return True
+
+
+class PastMatchSelect(
+    discord.ui.DynamicItem[discord.ui.UserSelect],
+    template=r"ss:profile:past:(?P<guild_id>[^:]+):(?P<user_id>[^:]+)",
+):
+    """Server members, including people who have not joined this Secret Santa.
+
+    The id is stored on the menu, so a click still works after the message
+    view's timer would have stopped it or the process restarted.
+    """
+
+    def __init__(self, guild_id: str, user_id: str, cog=None):
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        self.cog = cog
         super().__init__(
-            placeholder="Someone you were paired with before",
-            min_values=1,
-            max_values=10,
+            discord.ui.UserSelect(
+                placeholder="Someone you were paired with before",
+                min_values=1,
+                max_values=10,
+                custom_id=f"ss:profile:past:{self.guild_id}:{self.user_id}",
+            )
         )
+
+    @property
+    def placeholder(self) -> str:
+        return self.item.placeholder
+
+    @property
+    def values(self):
+        return self.item.values
+
+    @property
+    def _values(self):
+        return self.item._values
+
+    @_values.setter
+    def _values(self, value) -> None:
+        self.item._values = value
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        del interaction, item
+        return cls(match["guild_id"], match["user_id"])
 
     async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        if not isinstance(view, ProfileView):
-            await interaction.response.send_message("This menu is not available right now.", ephemeral=True)
-            return
-        if str(interaction.user.id) != view.user_id:
-            await interaction.response.send_message(
-                "This menu belongs to the person who opened the profile.",
-                ephemeral=True,
+        try:
+            if not await _first_dispatch(interaction):
+                return
+            if interaction.response.is_done():
+                return
+            if str(interaction.user.id) != self.user_id:
+                await interaction.response.send_message(
+                    "This menu belongs to the person who opened the profile.",
+                    ephemeral=True,
+                )
+                return
+            cog = _component_cog(interaction, self.cog)
+            if cog is None:
+                await interaction.response.send_message("Secret Santa is not available right now.", ephemeral=True)
+                return
+            people = []
+            for member in self.item.values:
+                if getattr(member, "bot", False):
+                    continue
+                people.append((str(member.id), getattr(member, "display_name", "") or ""))
+            if not people:
+                await interaction.response.send_message("Pick a person. Bots are not in the draw.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            result = await cog.run(
+                cog.service.skip_past_matches,
+                self.guild_id,
+                self.user_id,
+                people,
             )
+            await interaction.followup.send(result.message, ephemeral=True)
+        except discord.InteractionResponded:
             return
-        people = []
-        for member in self.values:
-            if getattr(member, "bot", False):
-                continue
-            people.append((str(member.id), getattr(member, "display_name", "") or ""))
-        if not people:
-            await interaction.response.send_message("Pick a person. Bots are not in the draw.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        result = await view.cog.run(
-            view.cog.service.skip_past_matches,
-            view.guild_id,
-            view.user_id,
-            people,
+        except Exception as exc:
+            await report_component_failure(
+                f"past match menu guild {self.guild_id} user {self.user_id}",
+                interaction,
+                exc,
+            )
+
+
+def _profile_button(action: str, label: str, style: discord.ButtonStyle, guild_id: str, user_id: str):
+    return discord.ui.Button(
+        label=label,
+        style=style,
+        custom_id=f"ss:profile:{action}:{guild_id}:{user_id}",
+    )
+
+
+async def _profile_ready(button, interaction: discord.Interaction):
+    if not await _first_dispatch(interaction):
+        return None
+    if interaction.response.is_done():
+        return None
+    if str(interaction.user.id) != button.user_id:
+        await interaction.response.send_message(
+            "These buttons belong to the person who opened them.",
+            ephemeral=True,
         )
-        await interaction.followup.send(result.message, ephemeral=True)
+        return None
+    cog = _component_cog(interaction, button.cog)
+    if cog is None:
+        await interaction.response.send_message("Secret Santa is not available right now.", ephemeral=True)
+        return None
+    return cog
+
+
+class ProfileEditButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"ss:profile:edit:(?P<guild_id>[^:]+):(?P<user_id>[^:]+)",
+):
+    def __init__(self, guild_id: str, user_id: str, cog=None):
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        self.cog = cog
+        super().__init__(
+            _profile_button("edit", "Edit profile", discord.ButtonStyle.primary, self.guild_id, self.user_id)
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        del interaction, item
+        return cls(match["guild_id"], match["user_id"])
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            cog = await _profile_ready(self, interaction)
+            if cog is None:
+                return
+            info = await cog.run(cog.service.my_info, self.guild_id, self.user_id)
+            if not info.ok:
+                await interaction.response.send_message(info.message, ephemeral=True)
+                return
+            await interaction.response.send_modal(ProfileModal(cog, self.guild_id, self.user_id, info.data or {}))
+        except discord.InteractionResponded:
+            return
+        except Exception as exc:
+            await report_component_failure(f"profile edit guild {self.guild_id} user {self.user_id}", interaction, exc)
+
+
+class ProfileWindowButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"ss:profile:window:(?P<guild_id>[^:]+):(?P<user_id>[^:]+)",
+):
+    def __init__(self, guild_id: str, user_id: str, cog=None):
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        self.cog = cog
+        super().__init__(
+            _profile_button("window", "Delivery window", discord.ButtonStyle.secondary, self.guild_id, self.user_id)
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        del interaction, item
+        return cls(match["guild_id"], match["user_id"])
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            cog = await _profile_ready(self, interaction)
+            if cog is None:
+                return
+            info = await cog.run(cog.service.my_info, self.guild_id, self.user_id)
+            if not info.ok:
+                await interaction.response.send_message(info.message, ephemeral=True)
+                return
+            await interaction.response.send_modal(
+                DeliveryWindowModal(
+                    cog,
+                    self.guild_id,
+                    self.user_id,
+                    (info.data or {}).get("delivery_window"),
+                )
+            )
+        except discord.InteractionResponded:
+            return
+        except Exception as exc:
+            await report_component_failure(
+                f"delivery window button guild {self.guild_id} user {self.user_id}",
+                interaction,
+                exc,
+            )
+
+
+class ProfileDigitalButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"ss:profile:digital:(?P<guild_id>[^:]+):(?P<user_id>[^:]+)",
+):
+    def __init__(self, guild_id: str, user_id: str, cog=None):
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        self.cog = cog
+        super().__init__(
+            _profile_button(
+                "digital",
+                "Toggle digital gift",
+                discord.ButtonStyle.secondary,
+                self.guild_id,
+                self.user_id,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        del interaction, item
+        return cls(match["guild_id"], match["user_id"])
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            cog = await _profile_ready(self, interaction)
+            if cog is None:
+                return
+            info = await cog.run(cog.service.my_info, self.guild_id, self.user_id)
+            if not info.ok:
+                await interaction.response.send_message(info.message, ephemeral=True)
+                return
+            updated = not bool((info.data or {}).get("digital_only"))
+            result = await cog.run(
+                cog.service.update_profile,
+                self.guild_id,
+                self.user_id,
+                digital_only=updated,
+            )
+            if not result.ok:
+                await interaction.response.send_message(result.message, ephemeral=True)
+                return
+            if updated:
+                text = "Digital gift is on. An address is not required."
+            else:
+                text = "Digital gift is off. An address is required before the draw."
+            await interaction.response.send_message(text, ephemeral=True)
+        except discord.InteractionResponded:
+            return
+        except Exception as exc:
+            await report_component_failure(
+                f"digital toggle guild {self.guild_id} user {self.user_id}",
+                interaction,
+                exc,
+            )
 
 
 class ProfileView(discord.ui.View):
     def __init__(self, cog, guild_id: str, user_id: str, digital_only: bool, in_guild: bool = False):
-        super().__init__(timeout=180)
+        # No timer. The buttons are dynamic items, so a click still has a
+        # listener after this process restarts.
+        super().__init__(timeout=None)
         self.cog = cog
-        self.guild_id = guild_id
-        self.user_id = user_id
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
         self.digital_only = digital_only
         if in_guild:
-            self.add_item(PastMatchSelect())
-
-    async def _owner(self, interaction: discord.Interaction) -> bool:
-        if str(interaction.user.id) == self.user_id:
-            return True
-        await interaction.response.send_message("These buttons belong to the person who opened them.", ephemeral=True)
-        return False
-
-    @discord.ui.button(label="Edit profile", style=discord.ButtonStyle.primary)
-    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        del button
-        if not await self._owner(interaction):
-            return
-        info = await self.cog.run(self.cog.service.my_info, self.guild_id, self.user_id)
-        if not info.ok:
-            await interaction.response.send_message(info.message, ephemeral=True)
-            return
-        await interaction.response.send_modal(ProfileModal(self.cog, self.guild_id, self.user_id, info.data or {}))
-
-    @discord.ui.button(label="Delivery window", style=discord.ButtonStyle.secondary)
-    async def delivery_window(self, interaction: discord.Interaction, button: discord.ui.Button):
-        del button
-        if not await self._owner(interaction):
-            return
-        info = await self.cog.run(self.cog.service.my_info, self.guild_id, self.user_id)
-        if not info.ok:
-            await interaction.response.send_message(info.message, ephemeral=True)
-            return
-        await interaction.response.send_modal(
-            DeliveryWindowModal(
-                self.cog,
-                self.guild_id,
-                self.user_id,
-                (info.data or {}).get("delivery_window"),
-            )
-        )
-
-    @discord.ui.button(label="Toggle digital gift", style=discord.ButtonStyle.secondary)
-    async def toggle_digital(self, interaction: discord.Interaction, button: discord.ui.Button):
-        del button
-        if not await self._owner(interaction):
-            return
-        updated = not self.digital_only
-        result = await self.cog.run(
-            self.cog.service.update_profile,
-            self.guild_id,
-            self.user_id,
-            digital_only=updated,
-        )
-        if not result.ok:
-            await interaction.response.send_message(result.message, ephemeral=True)
-            return
-        self.digital_only = updated
-        if updated:
-            text = "Digital gift is on. An address is not required."
-        else:
-            text = "Digital gift is off. An address is required before the draw."
-        await interaction.response.send_message(text, ephemeral=True)
+            self.add_item(PastMatchSelect(self.guild_id, self.user_id, cog))
+        self.edit = ProfileEditButton(self.guild_id, self.user_id, cog)
+        self.delivery_window = ProfileWindowButton(self.guild_id, self.user_id, cog)
+        self.toggle_digital = ProfileDigitalButton(self.guild_id, self.user_id, cog)
+        self.add_item(self.edit)
+        self.add_item(self.delivery_window)
+        self.add_item(self.toggle_digital)
 
     async def on_error(self, interaction, error, item, /) -> None:
         del item
@@ -373,27 +571,61 @@ class NotificationSettingsModal(discord.ui.Modal, title="Reminder settings"):
         await report_component_failure(f"notification settings guild {self.guild_id}", interaction, error)
 
 
+class SettingsEditButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"ss:settings:(?P<guild_id>[^:]+)",
+):
+    def __init__(self, guild_id: str, cog=None):
+        self.guild_id = str(guild_id)
+        self.cog = cog
+        super().__init__(
+            discord.ui.Button(
+                label="Edit notifications",
+                style=discord.ButtonStyle.primary,
+                custom_id=f"ss:settings:{self.guild_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        del interaction, item
+        return cls(match["guild_id"])
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            if not await _first_dispatch(interaction):
+                return
+            if interaction.response.is_done():
+                return
+            cog = _component_cog(interaction, self.cog)
+            if cog is None:
+                await interaction.response.send_message("Secret Santa is not available right now.", ephemeral=True)
+                return
+            result = await cog.run(
+                cog.service.notification_settings,
+                self.guild_id,
+                str(interaction.user.id),
+                _interaction_is_admin(interaction),
+            )
+            if not result.ok:
+                await interaction.response.send_message(result.message, ephemeral=True)
+                return
+            await interaction.response.send_modal(
+                NotificationSettingsModal(cog, self.guild_id, result.data or {})
+            )
+        except discord.InteractionResponded:
+            return
+        except Exception as exc:
+            await report_component_failure(f"notification settings guild {self.guild_id}", interaction, exc)
+
+
 class NotificationSettingsView(discord.ui.View):
     def __init__(self, cog, guild_id: str):
-        super().__init__(timeout=180)
+        super().__init__(timeout=None)
         self.cog = cog
-        self.guild_id = guild_id
-
-    @discord.ui.button(label="Edit notifications", style=discord.ButtonStyle.primary)
-    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        del button
-        result = await self.cog.run(
-            self.cog.service.notification_settings,
-            self.guild_id,
-            str(interaction.user.id),
-            _interaction_is_admin(interaction),
-        )
-        if not result.ok:
-            await interaction.response.send_message(result.message, ephemeral=True)
-            return
-        await interaction.response.send_modal(
-            NotificationSettingsModal(self.cog, self.guild_id, result.data or {})
-        )
+        self.guild_id = str(guild_id)
+        self.edit = SettingsEditButton(self.guild_id, cog)
+        self.add_item(self.edit)
 
     async def on_error(self, interaction, error, item, /) -> None:
         del item
@@ -500,6 +732,8 @@ class SetupButton(
 
     async def callback(self, interaction: discord.Interaction):
         try:
+            if not await _first_dispatch(interaction):
+                return
             if interaction.response.is_done():
                 return
             if str(interaction.user.id) != self.user_id:
@@ -548,6 +782,8 @@ class AnnounceChannelPicker(
 
     async def callback(self, interaction: discord.Interaction):
         try:
+            if not await _first_dispatch(interaction):
+                return
             if interaction.response.is_done():
                 return
             if str(interaction.user.id) != self.user_id:
@@ -610,43 +846,88 @@ async def _resolve_text_channel(interaction, selected):
     return None
 
 
-class PastPartnerSelect(discord.ui.Select):
+class PastPartnerSelect(
+    discord.ui.DynamicItem[discord.ui.Select],
+    template=r"ss:past:(?P<guild_id>[^:]+):(?P<user_id>[^:]+)",
+):
     """Finished-event partners. The person chooses which ones to skip again."""
 
-    def __init__(self, options: list[discord.SelectOption]):
+    def __init__(self, guild_id: str, user_id: str, options: list[discord.SelectOption], cog=None):
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        self.cog = cog
         super().__init__(
-            placeholder="Choose who to skip again",
-            min_values=1,
-            max_values=len(options),
-            options=options,
+            discord.ui.Select(
+                placeholder="Choose who to skip again",
+                min_values=1,
+                max_values=len(options),
+                options=options,
+                custom_id=f"ss:past:{self.guild_id}:{self.user_id}",
+            )
         )
 
+    @property
+    def _values(self):
+        return self.item._values
+
+    @_values.setter
+    def _values(self, value) -> None:
+        self.item._values = value
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        del interaction, item
+        option = discord.SelectOption(label="Saved", value="saved")
+        return cls(match["guild_id"], match["user_id"], [option])
+
     async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        if not isinstance(view, PastPartnerView):
-            await interaction.response.send_message("This menu is not available right now.", ephemeral=True)
+        try:
+            if not await _first_dispatch(interaction):
+                return
+            if interaction.response.is_done():
+                return
+            if str(interaction.user.id) != self.user_id:
+                await interaction.response.send_message(
+                    "This menu belongs to the person who joined.",
+                    ephemeral=True,
+                )
+                return
+            cog = _component_cog(interaction, self.cog)
+            if cog is None:
+                await interaction.response.send_message("Secret Santa is not available right now.", ephemeral=True)
+                return
+            names = {}
+            view = self.view
+            if isinstance(view, PastPartnerView):
+                names = {str(person["user_id"]): person.get("name") or "" for person in view.partners}
+            else:
+                rows = await cog.run(cog.service.db.list_past_partners, self.guild_id, self.user_id)
+                names = {str(person["user_id"]): person.get("name") or "" for person in rows}
+            chosen = [(value, names.get(value, "")) for value in self.item.values if value in names]
+            if not chosen:
+                await interaction.response.send_message("Choose someone from the list.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            result = await cog.run(
+                cog.service.skip_past_matches,
+                self.guild_id,
+                self.user_id,
+                chosen,
+            )
+            await interaction.followup.send(result.message, ephemeral=True)
+        except discord.InteractionResponded:
             return
-        if str(interaction.user.id) != view.user_id:
-            await interaction.response.send_message("This menu belongs to the person who joined.", ephemeral=True)
-            return
-        names = {str(person["user_id"]): person.get("name") or "" for person in view.partners}
-        chosen = [(value, names.get(value, "")) for value in self.values if value in names]
-        if not chosen:
-            await interaction.response.send_message("Choose someone from the list.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        result = await view.cog.run(
-            view.cog.service.skip_past_matches,
-            view.guild_id,
-            view.user_id,
-            chosen,
-        )
-        await interaction.followup.send(result.message, ephemeral=True)
+        except Exception as exc:
+            await report_component_failure(
+                f"past partner menu guild {self.guild_id} user {self.user_id}",
+                interaction,
+                exc,
+            )
 
 
 class PastPartnerView(discord.ui.View):
     def __init__(self, cog, guild_id: str, user_id: str, partners: list[dict]):
-        super().__init__(timeout=180)
+        super().__init__(timeout=None)
         self.cog = cog
         self.guild_id = str(guild_id)
         self.user_id = str(user_id)
@@ -659,7 +940,7 @@ class PastPartnerView(discord.ui.View):
             for person in self.partners
         ]
         if options:
-            self.add_item(PastPartnerSelect(options))
+            self.add_item(PastPartnerSelect(self.guild_id, self.user_id, options, cog))
 
 
 def _interaction_is_admin(interaction) -> bool:
