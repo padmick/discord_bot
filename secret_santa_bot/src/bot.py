@@ -25,6 +25,7 @@ intents.members = True
 bot = commands.Bot(
     command_prefix=commands.when_mentioned_or("s!", "S!"),
     case_insensitive=True,
+    strip_after_prefix=True,
     intents=intents,
     help_command=CustomHelpCommand(),
 )
