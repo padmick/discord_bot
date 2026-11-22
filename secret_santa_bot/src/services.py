@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -16,7 +17,9 @@ from present import (
     format_help,
     label,
     match_card,
+    notes_card,
     profile_card,
+    reports_card,
     roster_card,
     settings_card,
     status_card,
@@ -29,13 +32,15 @@ DRAWN = "drawn"
 DONE = "done"
 GIFT_STATUSES = ("not_bought", "bought", "shipped", "received")
 GIVER_NEXT = {"not_bought": "bought", "bought": "shipped"}
-SENSITIVE_FIELDS = {"wishlist", "address"}
+SENSITIVE_FIELDS = {"wishlist", "address", "budget"}
 FIELD_LIMITS = {
     "wishlist": 1000,
     "address": 1000,
     "do_not_gift": 500,
     "notes": 500,
+    "budget": 80,
 }
+_TRACKING_LINK = re.compile(r"https?://[^\s<>]{1,500}\Z", re.IGNORECASE)
 DEFAULT_REMINDER_INTERVAL_DAYS = 7
 DEFAULT_SHIPPING_LEAD_DAYS = 3
 MAX_REMINDER_DAYS = 30
@@ -389,7 +394,7 @@ class EventService:
         card = match_card(receiver)
         return success(card.text(), card=card, **receiver)
 
-    def set_gift_status(self, guild_id: str, user_id: str, status: str) -> Result:
+    def set_gift_status(self, guild_id: str, user_id: str, status: str, tracking: str = "") -> Result:
         event = self._open(guild_id)
         if isinstance(event, Result):
             return event
@@ -397,7 +402,26 @@ class EventService:
             return failure("bad_phase", "Gift tracking starts after the draw.")
         status = (status or "").strip().lower()
         user_id = str(user_id)
+        link = tracking_link(tracking)
+        if link is None:
+            return failure("bad_link", "Use a tracking link that starts with http:// or https://.")
+        if link and status not in {"shipped", "tracking"}:
+            return failure("bad_link", "A tracking link is saved when the gift is marked shipped.")
         pairings = self.db.list_pairings(event["id"])
+        if status == "tracking":
+            if not link:
+                return failure("bad_link", "Add the tracking link after the word tracking.")
+            mine = next((row for row in pairings if row["giver_id"] == user_id), None)
+            if mine is None:
+                return failure("forbidden", "Only the giver can add a tracking link.")
+            if mine["gift_status"] not in {"shipped", "received"}:
+                return failure("bad_transition", "Mark the gift shipped before adding a tracking link.")
+            self.db.set_gift_status(event["id"], user_id, mine["gift_status"], tracking_url=link)
+            return success(
+                "**Tracking link saved.** It was sent to the person receiving the gift.",
+                notify_receiver_id=mine["receiver_id"],
+                tracking_url=link,
+            )
         if status in GIVER_NEXT.values():
             mine = next((row for row in pairings if row["giver_id"] == user_id), None)
             if mine is None:
@@ -405,7 +429,17 @@ class EventService:
             expected = next(current for current, nxt in GIVER_NEXT.items() if nxt == status)
             if mine["gift_status"] != expected:
                 return failure("bad_transition", "That skips a step. Update the gift one step at a time.")
-            self.db.set_gift_status(event["id"], user_id, status)
+            saved_link = link or None
+            self.db.set_gift_status(event["id"], user_id, status, tracking_url=saved_link)
+            if status == "shipped":
+                message = "**Marked the gift shipped.**"
+                if link:
+                    message += " The tracking link was sent to them."
+                return success(
+                    message,
+                    notify_receiver_id=mine["receiver_id"],
+                    tracking_url=link,
+                )
             return success(f"**Marked the gift {status.replace('_', ' ')}.**")
         if status == "received":
             mine = next((row for row in pairings if row["receiver_id"] == user_id), None)
@@ -415,7 +449,7 @@ class EventService:
                 return failure("bad_transition", "The gift has to be shipped before it can be marked received.")
             self.db.set_gift_status(event["id"], mine["giver_id"], "received")
             return success("**Marked the gift received.**")
-        return failure("bad_status", "Use bought, shipped, or received.")
+        return failure("bad_status", "Use bought, shipped, received, or tracking.")
 
     def prepare_message(
         self,
@@ -456,7 +490,51 @@ class EventService:
             body=body,
             direction=direction,
             image=picture,
+            event_id=event["id"],
         )
+
+    def remember_note(
+        self,
+        event_id: int,
+        sender_id: str,
+        recipient_id: str,
+        body: str,
+        image: str = "",
+    ) -> None:
+        self.db.save_note(int(event_id), str(sender_id), str(recipient_id), body or "", image or "")
+
+    def my_notes(self, guild_id: str, user_id: str) -> Result:
+        event = self._open(guild_id)
+        if isinstance(event, Result):
+            return event
+        if event["phase"] != DRAWN:
+            return failure("bad_phase", "Anonymous notes are available after the draw.")
+        user_id = str(user_id)
+        pairing = self._pairing_for_giver(event["id"], user_id)
+        giftee_id = pairing["receiver_id"] if pairing else ""
+        santa_id = self._giver_for(event["id"], user_id) or ""
+        rows = self.db.list_notes(event["id"], user_id)
+        if not rows:
+            return success("**No anonymous notes yet.**")
+
+        def rank(row: dict[str, Any]) -> int:
+            sender, recipient = row["sender_id"], row["recipient_id"]
+            if sender == user_id and recipient == giftee_id:
+                return 0
+            if recipient == user_id and sender == giftee_id:
+                return 1
+            if sender == user_id and recipient == santa_id:
+                return 2
+            if recipient == user_id and sender == santa_id:
+                return 3
+            return 4
+
+        entries = []
+        for row in sorted(rows, key=rank):
+            title = _note_title(user_id, row["sender_id"], row["recipient_id"], giftee_id, santa_id)
+            entries.append((title, row.get("body") or "", row.get("image_url") or ""))
+        card = notes_card(entries)
+        return success(card.text(), card=card)
 
     def submit_feedback(self, guild_id: str, user_id: str, kind: str, text: str) -> Result:
         body = " ".join((text or "").split())
@@ -472,6 +550,19 @@ class EventService:
         if kind == "problem":
             return success("Problem report saved. Thank you for telling us.")
         return success("Feature request saved. Thank you for the idea.")
+
+    def feedback_report(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
+        event = self.db.get_latest_event(str(guild_id))
+        if event is None:
+            return failure("no_event", "There is no Secret Santa event in this server yet.")
+        denied = self._manager(event, actor_id, is_admin)
+        if denied:
+            return denied
+        rows = self.db.list_feedback(str(guild_id), limit=10)
+        if not rows:
+            return success("**No problem reports or feature requests for this server yet.**")
+        card = reports_card(rows)
+        return success(card.text(), card=card)
 
     def claim_changelog(self, user_id: str) -> bool:
         return bool(self.db.claim_changelog(str(user_id), CHANGELOG_VERSION))
@@ -713,6 +804,7 @@ class EventService:
             "address": receiver.get("address") or "",
             "do_not_gift": receiver.get("do_not_gift") or "",
             "notes": receiver.get("notes") or "",
+            "budget": receiver.get("budget") or "",
             "digital_only": bool(receiver.get("digital_only")),
         }
 
@@ -759,6 +851,30 @@ def _people_phrase(names: list[str]) -> str:
     return ", ".join(bolded[:-1]) + f", and {bolded[-1]}"
 
 
+def tracking_link(value: str) -> str | None:
+    """Return a cleaned http(s) link, an empty string when none was given, or None when it is unusable."""
+    text = " ".join((value or "").split())
+    if not text:
+        return ""
+    if _TRACKING_LINK.fullmatch(text):
+        return text
+    return None
+
+
+def _note_title(user_id: str, sender_id: str, recipient_id: str, giftee_id: str, santa_id: str) -> str:
+    if sender_id == user_id and recipient_id == giftee_id:
+        return "To the person you're buying for"
+    if recipient_id == user_id and sender_id == giftee_id:
+        return "From the person you're buying for"
+    if sender_id == user_id and recipient_id == santa_id:
+        return "To the person buying your gift"
+    if recipient_id == user_id and sender_id == santa_id:
+        return "From the person buying your gift"
+    if sender_id == user_id:
+        return "A note you sent earlier"
+    return "A note you received earlier"
+
+
 def match_text(receiver: dict[str, Any]) -> str:
     return match_card(receiver).text()
 
@@ -802,6 +918,7 @@ def assignment_text(note: dict[str, Any]) -> str:
         "address": note.get("address"),
         "do_not_gift": note.get("do_not_gift"),
         "notes": note.get("notes"),
+        "budget": note.get("budget"),
         "digital_only": note.get("digital_only"),
     }
     return match_text(receiver)

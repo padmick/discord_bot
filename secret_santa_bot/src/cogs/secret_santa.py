@@ -26,6 +26,7 @@ from present import (
     removed_card,
     reveal_cards,
     shipping_reminder_card,
+    shipped_card,
     to_embed,
     wishlist_update_card,
 )
@@ -380,6 +381,11 @@ class SecretSantaCog(commands.Cog):
         """Set your shipping address."""
         await self._set_field(ctx, "address", address)
 
+    @commands.hybrid_command(name="setbudget", help="Set the spending limit for your gift")
+    async def setbudget(self, ctx, *, budget: str):
+        """Set the spending limit for your gift."""
+        await self._set_field(ctx, "budget", budget)
+
     @commands.hybrid_command(name="myinfo", help="DM your profile")
     async def myinfo(self, ctx):
         """DM your profile."""
@@ -440,14 +446,52 @@ class SecretSantaCog(commands.Cog):
         result = await self.run(self.service.submit_feedback, guild_id, str(ctx.author.id), kind, text)
         await _show(ctx, result)
 
-    @commands.hybrid_command(name="gift", help="Update gift progress: bought, shipped, or received")
-    async def gift(self, ctx, status: str):
-        """Update gift progress: bought, shipped, or received."""
+    @commands.hybrid_command(name="notes", help="DM the latest anonymous notes again")
+    async def notes(self, ctx):
+        """DM the latest anonymous notes again."""
         event = await self._personal_event(ctx)
         if event is None:
             return
-        result = await self.run(self.service.set_gift_status, event["guild_id"], str(ctx.author.id), status)
+        result = await self.run(self.service.my_notes, event["guild_id"], str(ctx.author.id))
+        if not result.ok or result.card is None:
+            await _show(ctx, result)
+            return
+        await self._private(ctx, result.message, card=result.card)
+
+    @commands.hybrid_command(name="gift", help="Mark bought, shipped, or received. Add a link when shipped")
+    async def gift(self, ctx, status: str, *, link: str = ""):
+        """Mark bought, shipped, or received. Add a link when shipped."""
+        event = await self._personal_event(ctx)
+        if event is None:
+            return
+        result = await self.run(
+            self.service.set_gift_status,
+            event["guild_id"],
+            str(ctx.author.id),
+            status,
+            link,
+        )
+        if result.ok and (result.data or {}).get("notify_receiver_id"):
+            await self._dm_card(
+                result.data["notify_receiver_id"],
+                shipped_card(result.data.get("tracking_url") or ""),
+            )
         await _show(ctx, result)
+
+    @commands.hybrid_command(name="reports", help="DM saved problem reports and feature requests")
+    @commands.guild_only()
+    async def reports(self, ctx):
+        """DM saved problem reports and feature requests."""
+        result = await self.run(
+            self.service.feedback_report,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+        )
+        if not result.ok or result.card is None:
+            await _show(ctx, result)
+            return
+        await self._private(ctx, result.message, card=result.card)
 
     @commands.hybrid_command(name="settings", help="Choose which reminders send and how many days apart")
     @commands.guild_only()
@@ -692,6 +736,17 @@ class SecretSantaCog(commands.Cog):
         )
         log_event("MESSAGE", anonymous_message_log(delivered, direction))
         if delivered:
+            try:
+                await self.run(
+                    self.service.remember_note,
+                    event["id"],
+                    str(user.id),
+                    result.data["target_id"],
+                    result.data["body"],
+                    result.data.get("image") or "",
+                )
+            except Exception as error:
+                report_failure("anonymous note", error)
             await respond("**Sent.** They received the anonymous note.")
         else:
             await respond("**Not delivered.** Their DMs are closed.")
@@ -811,6 +866,7 @@ def _match_card(note: dict) -> Card:
             "address": note.get("address"),
             "do_not_gift": note.get("do_not_gift"),
             "notes": note.get("notes"),
+            "budget": note.get("budget"),
             "digital_only": note.get("digital_only"),
         }
     )

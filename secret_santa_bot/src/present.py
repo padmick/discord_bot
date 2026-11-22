@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import discord
 
 # Bump this, and rewrite changelog_card, when a release should show a new note.
-CHANGELOG_VERSION = 1
+CHANGELOG_VERSION = 2
 
 SANTA_RED = 0xC23B22
 GIFT_STATUSES = ("not_bought", "bought", "shipped", "received")
@@ -30,6 +30,7 @@ HELP_GROUPS = (
             "profile",
             "setwishlist",
             "setaddress",
+            "setbudget",
             "myinfo",
             "exclude",
             "unexclude",
@@ -40,7 +41,7 @@ HELP_GROUPS = (
     ),
     (
         "After the draw",
-        ("match", "partnerinfo", "message", "gift"),
+        ("match", "partnerinfo", "message", "notes", "gift"),
     ),
     ("Event status", ("status", "participants")),
     (
@@ -59,6 +60,7 @@ HELP_GROUPS = (
             "broadcast",
             "reveal",
             "logs",
+            "reports",
             "ratelimit",
         ),
     ),
@@ -116,8 +118,9 @@ def guide_fields() -> tuple[Field, ...]:
     return (
         Field(
             "Your profile",
-            "A wishlist is required. Add a shipping address too, unless the gift can be digital.\n"
-            "Use `/profile` for the private form. `s!setwishlist` and `s!setaddress` also work, "
+            "A wishlist is required. Add a shipping address too, unless the gift can be digital. "
+            "A spending limit is optional.\n"
+            "Use `/profile` for the private form. `s!setwishlist`, `s!setaddress`, and `s!setbudget` also work, "
             "and those messages are deleted in a server channel.",
         ),
         Field(
@@ -131,12 +134,13 @@ def guide_fields() -> tuple[Field, ...]:
             "Anonymous notes",
             "Write to your person with `s!message giftee`. They can write back with `s!message gifter`. "
             "Emoji, GIF links, and attached pictures show in the note. Each note has a Reply button. "
-            "Keep their name out of the server channel.",
+            "`s!notes` DMs the latest notes again. Keep their name out of the server channel.",
         ),
         Field(
             "The gift",
             "Mark progress one step at a time: `s!gift bought`, then `s!gift shipped`. "
-            "Your giftee marks `s!gift received` after it arrives. "
+            "Add a tracking link with `s!gift shipped https://...`. Your giftee gets that link by DM "
+            "and marks `s!gift received` after it arrives. "
             "A reminder can arrive near the deadline when the organizer leaves shipping reminders on.",
         ),
         Field(
@@ -163,6 +167,7 @@ def guide_fields() -> tuple[Field, ...]:
         Field(
             "Suggestions",
             "`/problem` reports a problem and `/idea` requests a feature. "
+            "The organizer reads them privately with `s!reports`. "
             "`s!tutorial` walks through the commands when you ask. "
             "`s!news` shows what has changed. That note appears once, then only when something new ships.",
         ),
@@ -277,6 +282,7 @@ def profile_card(participant: dict) -> Card:
         description="This stays in a DM. After the draw, your giver sees the wishlist.",
         fields=(
             Field("Wishlist", shown(participant.get("wishlist"), "Not set")),
+            Field("Spending limit", shown(participant.get("budget"), "Not set")),
             Field("Do not gift", shown(participant.get("do_not_gift"), "Not set")),
             Field("Notes", shown(participant.get("notes"), "Not set")),
             Field("Address", shown(participant.get("address"), "Not set")),
@@ -322,6 +328,7 @@ def match_card(receiver: dict) -> Card:
         description=f"You are getting a gift for **{name}**.",
         fields=(
             Field("Wishlist", shown(receiver.get("wishlist"), "No wishlist set")),
+            Field("Spending limit", shown(receiver.get("budget"), "Not set")),
             Field("Do not gift", shown(receiver.get("do_not_gift"), "Not set")),
             Field("Notes", shown(receiver.get("notes"), "Not set")),
             Field("Delivery", delivery),
@@ -375,7 +382,7 @@ def shipping_reminder_card(deadline: object) -> Card:
     return Card(
         title="Your gift is not marked shipped",
         description=f"The deadline is {day}.",
-        footer="When it goes out, run s!gift shipped.",
+        footer="When it goes out, run s!gift shipped. You can add a tracking link.",
     )
 
 
@@ -412,8 +419,9 @@ TUTORIAL_PAGES: tuple[tuple[str, str], ...] = (
     (
         "Your profile",
         "A wishlist is required. Add a shipping address unless the gift can be digital.\n"
-        "`s!profile` opens a private form. `s!setwishlist` and `s!setaddress` also work, "
-        "and those messages are deleted in a server channel. `s!myinfo` sends your profile by DM.",
+        "`s!profile` opens a private form. `s!setwishlist`, `s!setaddress`, and `s!setbudget` also work, "
+        "and those messages are deleted in a server channel. A spending limit is optional. "
+        "`s!myinfo` sends your profile by DM.",
     ),
     (
         "The draw",
@@ -425,9 +433,10 @@ TUTORIAL_PAGES: tuple[tuple[str, str], ...] = (
         "Notes and the gift",
         "`s!message giftee` writes to the person you're buying for. "
         "They answer with `s!message gifter` or the Reply button. "
-        "Emoji, GIF links, and attached pictures show in the note. Keep their name out of the server.\n"
+        "Emoji, GIF links, and attached pictures show in the note. `s!notes` DMs the latest copies again. "
+        "Keep their name out of the server.\n"
         "Mark the gift one step at a time: `s!gift bought`, then `s!gift shipped`. "
-        "They mark `s!gift received`.",
+        "Add a tracking link on the shipped step. They mark `s!gift received`.",
     ),
     (
         "If plans change",
@@ -440,7 +449,8 @@ TUTORIAL_PAGES: tuple[tuple[str, str], ...] = (
         "Running it and asking for help",
         "`s!create` opens one event. The organizer is not in the draw until they join. "
         "`s!settings` chooses which reminders go out. `s!status` shows who is missing a profile, not what they wrote.\n"
-        "`s!problem` reports a problem. `s!idea` requests a feature. `s!news` shows what changed.",
+        "`s!problem` reports a problem. `s!idea` requests a feature. The organizer reads them with `s!reports`. "
+        "`s!news` shows what changed.",
     ),
 )
 
@@ -484,7 +494,8 @@ TIPS: dict[str, tuple[str, str]] = {
     ),
     "gift-steps": (
         "One step at a time",
-        "Mark the gift bought, then shipped. The person receiving it marks `s!gift received`.",
+        "Mark the gift bought, then shipped. A tracking link can go with the shipped step. "
+        "The person receiving it marks `s!gift received`.",
     ),
     "skip-later": (
         "Skips and the current draw",
@@ -509,7 +520,10 @@ COMMAND_TIPS = {
     "profile": "past-match",
     "setwishlist": "past-match",
     "setaddress": "past-match",
+    "setbudget": "past-match",
     "myinfo": "past-match",
+    "notes": "notes",
+    "reports": "organizer",
     "message": "notes",
     "match": "notes",
     "partnerinfo": "notes",
@@ -531,7 +545,7 @@ def tip_id_for(command_name: str) -> str:
 def tip_candidates(command_name: str) -> tuple[str, ...]:
     """Tips this command may show, first unseen one only."""
     name = command_name or ""
-    if name in {"profile", "setwishlist", "setaddress", "myinfo"}:
+    if name in {"profile", "setwishlist", "setaddress", "setbudget", "myinfo"}:
         ordered = ("profile", "past-match")
     else:
         primary = tip_id_for(name)
@@ -558,23 +572,73 @@ def changelog_card() -> Card:
         description="A quick look at the latest Secret Santa updates.",
         fields=(
             Field(
-                "Notes",
-                "Emoji stay in anonymous notes. A GIF link or an attached picture shows in the note.",
+                "Spending limit",
+                "Add an optional spending limit on `/profile` or with `s!setbudget`. Your giver sees it with the wishlist.",
             ),
             Field(
-                "Ideas",
-                "Use `/problem` to report a problem and `/idea` to request a feature.",
+                "Notes again",
+                "`s!notes` DMs the latest anonymous note in each direction. Names stay out of the server.",
             ),
             Field(
-                "Past matches",
-                "On `/profile` in the server, skip someone you were paired with before, even if they have not joined.",
+                "Tracking",
+                "When you ship the gift, add a link: `s!gift shipped https://...`. The person receiving it gets the link by DM.",
             ),
             Field(
-                "Getting around",
-                "Joining sends a guide by DM. `s!help` groups the commands, and `s!news` shows this again.",
+                "Reports",
+                "The organizer can read saved problem reports and feature requests with `s!reports`. That list is sent by DM.",
             ),
         ),
         footer="This shows once. A new note appears only when something new ships.",
+    )
+
+
+def reports_card(rows: list[dict]) -> Card:
+    fields = []
+    for row in rows[:10]:
+        kind = "Problem" if row.get("kind") == "problem" else "Idea"
+        user_id = str(row.get("user_id") or "")
+        who = f"<@{user_id}>" if user_id.isdigit() else "Someone"
+        fields.append(Field(kind, f"{who}\n{shown(row.get('body'), 'Empty note')}"))
+    return Card(
+        title="Reports and ideas",
+        description="These notes were saved in this server.",
+        fields=tuple(fields),
+        footer="Only you can see this. It is sent in a DM.",
+    )
+
+
+def notes_card(entries: list[tuple[str, str, str]]) -> Card:
+    fields = []
+    image = ""
+    for title, body, picture in entries:
+        rendered, found = note_content(body)
+        picture = picture if str(picture).startswith(("http://", "https://")) else ""
+        text = rendered or ("Sent a GIF." if picture or found else "They sent a note with no text.")
+        if picture and picture not in text:
+            text = f"{text}\n{picture}"
+        if not image:
+            image = picture or found
+        fields.append(Field(title, text))
+    return Card(
+        title="Your latest notes",
+        description="These are copies of the latest note in each direction. Names stay out of them.",
+        fields=tuple(fields),
+        footer="s!message sends a new note. This copy is not posted in the server.",
+        image=image if len(entries) == 1 else "",
+    )
+
+
+def shipped_card(tracking: str = "") -> Card:
+    link = tracking if str(tracking).startswith(("http://", "https://")) else ""
+    fields = (Field("Tracking", link),) if link else ()
+    description = "Your gift was marked shipped."
+    if not link:
+        description += " No tracking link was included."
+    return Card(
+        title="Your gift is on the way",
+        description=description,
+        fields=fields,
+        footer="When it arrives, run s!gift received.",
     )
 
 

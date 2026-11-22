@@ -13,6 +13,37 @@ def db(postgres_url):
     manager.close()
 
 
+def test_budget_tracking_notes_and_reports_round_trip(db):
+    event = db.create_event("guild-budget", "Party", "org")
+    db.add_participant(event["id"], "ada", "Ada")
+    db.add_participant(event["id"], "bea", "Bea")
+    db.update_profile(event["id"], "ada", budget="$20")
+    assert db.get_participant(event["id"], "ada")["budget"] == "$20"
+    db.replace_pairings(event["id"], [("ada", "bea", "shipped")])
+    db.set_gift_status(event["id"], "ada", "shipped", tracking_url="https://track.example/1")
+    assert db.list_pairings(event["id"])[0]["tracking_url"] == "https://track.example/1"
+    db.replace_pairings(event["id"], [("ada", "bea", "shipped")])
+    assert db.list_pairings(event["id"])[0]["tracking_url"] == "https://track.example/1"
+    db.replace_pairings(event["id"], [("ada", "cara", "not_bought")])
+    assert db.list_pairings(event["id"])[0]["tracking_url"] == ""
+
+    db.save_note(event["id"], "ada", "bea", "hello", "https://cdn.example/a.gif")
+    db.save_note(event["id"], "ada", "bea", "updated", "")
+    db.save_note(event["id"], "bea", "ada", "thanks", "")
+    received = db.list_notes(event["id"], "bea")
+    assert {row["body"] for row in received} == {"updated", "thanks"}
+    db.delete_participant(event["id"], "ada")
+    assert db.list_notes(event["id"], "bea") == []
+
+    db.add_feedback("guild-budget", "99", "problem", "the button failed")
+    db.add_feedback("other-guild", "99", "feature", "stickers")
+    assert [row["body"] for row in db.list_feedback("guild-budget")] == ["the button failed"]
+    assert db.get_latest_event("guild-budget")["id"] == event["id"]
+    db.delete_event(event["id"])
+    assert db.get_latest_event("guild-budget") is None
+    assert db.list_notes(event["id"], "bea") == []
+
+
 def test_unknown_fields_and_feedback_kinds_are_rejected(db):
     event = db.create_event("guild", "Party", "org")
     with pytest.raises(ValueError, match="shirt_size"):
@@ -237,6 +268,7 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
         assert person["wishlist"] == "books"
         assert person["name"] == "Ada"
         assert "shirt_size" not in person
+        assert person["budget"] is None
         event = manager.get_open_event("guild")
         assert event["profile_reminders"] is True
         assert event["shipping_reminders"] is True
@@ -262,7 +294,7 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
             cursor.execute("SELECT tip_id FROM tips_seen WHERE user_id = 'ada' ORDER BY tip_id")
             assert [row[0] for row in cursor.fetchall()] == ["notes", "profile"]
             cursor.execute("SELECT MAX(version) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 4
+            assert cursor.fetchone()[0] == 5
     finally:
         check.close()
 
