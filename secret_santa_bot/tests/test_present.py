@@ -71,6 +71,9 @@ class _Memory:
     def add_participant(self, event_id, user_id, name):
         self.participants[event_id][user_id] = {"user_id": user_id, "name": name}
 
+    def get_participant(self, event_id, user_id):
+        return self.participants.get(event_id, {}).get(user_id)
+
     def list_actionable_events(self):
         return [event for event in self.events.values() if event["phase"] != "done"]
 
