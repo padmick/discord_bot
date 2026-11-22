@@ -50,6 +50,7 @@ class FakeDB:
             "spending_cap": None,
             "rules": None,
             "signup_deadline": None,
+            "announce_channel_id": None,
         }
         return dict(self.events[event_id])
 
@@ -789,6 +790,57 @@ def test_carry_uses_only_the_latest_finished_event():
     assert database.list_locked_pairs(database.get_open_event("guild")["id"]) == []
 
 
+def test_setup_saves_dates_and_the_announcement_hides_matches():
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    assert svc.apply_setup("guild", "11", False, "2026-12-01").code == "forbidden"
+    assert svc.setup_overview("guild", "11", False).code == "forbidden"
+    empty = svc.apply_setup("guild", "org", False)
+    assert "Nothing changed" in empty.message
+    assert svc.apply_setup("guild", "org", False, signup="tomorrow", cap="$25").code == "bad_date"
+    assert database.get_open_event("guild")["spending_cap"] is None
+    saved = svc.apply_setup(
+        "guild",
+        "org",
+        False,
+        signup=date.today().isoformat(),
+        deadline="2026-12-20",
+        cap="$25",
+        rules="Handmade only",
+    )
+    assert saved.ok
+    event = database.get_open_event("guild")
+    assert event["phase"] == "signup"
+    assert event["signup_deadline"] == date.today()
+    assert event["deadline"].isoformat() == "2026-12-20"
+    assert event["spending_cap"] == "$25"
+    assert event["rules"] == "Handmade only"
+    assert "Last day to join" in saved.card.text()
+    closed = svc.apply_setup("guild", "org", False, signup=(date.today() - timedelta(days=1)).isoformat())
+    assert closed.ok
+    assert "now closed" in closed.message
+    assert database.get_open_event("guild")["phase"] == "locked"
+    assert svc.prepare_announcement("guild", "org", False, "555").code == "bad_phase"
+    assert svc.unlock("guild", "org", False).code == "signup_closed"
+    svc.apply_setup("guild", "org", False, signup="clear")
+    assert svc.unlock("guild", "org", False).ok
+    ready = svc.prepare_announcement("guild", "org", False, "555")
+    assert ready.ok
+    assert "s!join" in ready.card.text()
+    assert "Handmade only" in ready.card.text()
+    assert "Bea" not in ready.card.text()
+    assert svc.prepare_announcement("guild", "org", False, "general").code == "bad_channel"
+    assert svc.remember_announcement("guild", "org", False, "555").ok
+    assert database.get_open_event("guild")["announce_channel_id"] == "555"
+    listed = svc.show_hint("")
+    assert "s!hint profile" in listed.card.text()
+    assert svc.show_hint("wishlist").ok
+    assert "wishlist" in svc.show_hint("wishlist").message.lower()
+    assert svc.show_hint("nope").code == "unknown_hint"
+    assert svc.claim_tip("11", "seen-join-tutorial") is True
+    assert svc.claim_tip("11", "seen-join-tutorial") is False
+
+
 def test_signup_date_closes_joining_and_leaves_the_gift_deadline():
     svc, database = service()
     svc.create_event("guild", "org", "Party")
@@ -831,6 +883,123 @@ def test_signup_date_closes_joining_and_leaves_the_gift_deadline():
     assert shown.ok
     assert (today - timedelta(days=1)).isoformat() in shown.message
     assert "2026-12-20" in shown.message
+
+
+async def test_setup_form_and_channel_menu_post_the_welcome():
+    import discord
+
+    from views import AnnounceChannelSelect, SetupModal, SetupView
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def post_open_announcement(self, guild_id, actor_id, is_admin, channel):
+            prepared = self.service.prepare_announcement(guild_id, actor_id, is_admin, str(channel.id))
+            if not prepared.ok:
+                return False, prepared.message
+            try:
+                await channel.send(embed=prepared.card)
+            except discord.Forbidden:
+                return False, "I can't post in that channel. Give me permission to send messages there."
+            self.service.remember_announcement(guild_id, actor_id, is_admin, str(channel.id))
+            return True, f"Posted the open announcement in {channel.mention}."
+
+    class Response:
+        def __init__(self):
+            self.done = False
+            self.messages = []
+            self.modals = []
+
+        def is_done(self):
+            return self.done
+
+        async def defer(self, ephemeral=False):
+            del ephemeral
+            self.done = True
+
+        async def send_message(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+            self.done = True
+
+        async def send_modal(self, modal):
+            self.modals.append(modal)
+            self.done = True
+
+    class Followup:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message, ephemeral=False, embed=None):
+            del ephemeral
+            self.messages.append((message, embed))
+
+    class Channel:
+        def __init__(self, channel_id, fail=False):
+            self.id = channel_id
+            self.mention = "#general"
+            self.fail = fail
+            self.sent = []
+
+        async def send(self, **kwargs):
+            if self.fail:
+                raise discord.Forbidden(SimpleNamespace(status=403, reason="missing"), "no")
+            self.sent.append(kwargs)
+
+    cog = Cog()
+    view = SetupView(cog, "guild", "org")
+    opener = SimpleNamespace(user=SimpleNamespace(id="org"), response=Response(), followup=Followup(), guild=None)
+    await view.edit.callback(opener)
+    modal = opener.response.modals[0]
+    assert isinstance(modal, SetupModal)
+    modal.signup._value = date.today().isoformat()
+    modal.deadline._value = "2026-12-20"
+    modal.cap._value = "$25"
+    modal.rules._value = "Handmade only"
+    submitted = SimpleNamespace(user=SimpleNamespace(id="org"), response=Response(), followup=Followup(), guild=None)
+    await modal.on_submit(submitted)
+    stored = database.get_open_event("guild")
+    assert stored["spending_cap"] == "$25"
+    assert stored["rules"] == "Handmade only"
+    assert "Setup saved" in submitted.followup.messages[-1][0]
+
+    channel = Channel(555)
+    guild = SimpleNamespace(get_channel=lambda channel_id: channel if int(channel_id) == 555 else None)
+
+    async def fetch_channel(channel_id):
+        return guild.get_channel(channel_id)
+
+    guild.fetch_channel = fetch_channel
+    select = next(item for item in view.children if isinstance(item, AnnounceChannelSelect))
+    select._values = [SimpleNamespace(id=555)]
+    posted = SimpleNamespace(user=SimpleNamespace(id="org"), response=Response(), followup=Followup(), guild=guild)
+    await select.callback(posted)
+    assert channel.sent
+    posted_embed = channel.sent[0]["embed"]
+    posted_text = "\n".join(
+        [posted_embed.title or "", posted_embed.description or ""]
+        + [f"{field.name} {field.value}" for field in posted_embed.fields]
+    )
+    assert "s!join" in posted_text
+    assert database.get_open_event("guild")["announce_channel_id"] == "555"
+    assert "Posted the open announcement" in posted.followup.messages[-1][0]
+
+    stranger = SimpleNamespace(user=SimpleNamespace(id="11"), response=Response(), followup=Followup(), guild=guild)
+    await select.callback(stranger)
+    assert "belongs to the person" in stranger.response.messages[0]
+
+    blocked = Channel(555, fail=True)
+    guild.get_channel = lambda channel_id: blocked
+    refused = SimpleNamespace(user=SimpleNamespace(id="org"), response=Response(), followup=Followup(), guild=guild)
+    await select.callback(refused)
+    assert "can't post" in refused.followup.messages[-1][0]
 
 
 async def test_past_partner_menu_skips_only_the_people_you_choose():

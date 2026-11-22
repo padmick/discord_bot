@@ -13,7 +13,7 @@ EVENT_FIELDS = (
     "id, guild_id, name, phase, organizer_id, deadline, "
     "last_profile_reminder, last_shipping_reminder, "
     "profile_reminders, shipping_reminders, reminder_interval_days, shipping_lead_days, "
-    "spending_cap, rules, signup_deadline"
+    "spending_cap, rules, signup_deadline, announce_channel_id"
 )
 
 
@@ -47,6 +47,7 @@ EVENT_UPDATE_FIELDS = {
     "spending_cap",
     "rules",
     "signup_deadline",
+    "announce_channel_id",
 }
 
 
@@ -633,6 +634,8 @@ class DatabaseManager:
             self._migrate_v6(cur)
         if self._schema_version(cur) < 7:
             self._migrate_v7(cur)
+        if self._schema_version(cur) < 8:
+            self._migrate_v8(cur)
         return legacy_count
 
     def _migrate_v1(self, cur) -> int | None:
@@ -664,6 +667,7 @@ class DatabaseManager:
                 spending_cap TEXT,
                 rules TEXT,
                 signup_deadline DATE,
+                announce_channel_id TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT events_phase_check CHECK (phase IN ('signup', 'locked', 'drawn', 'done'))
             )
@@ -831,6 +835,11 @@ class DatabaseManager:
         if self._table_exists(cur, "events"):
             cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS signup_deadline DATE")
         cur.execute("INSERT INTO schema_migrations (version) VALUES (7)")
+
+    def _migrate_v8(self, cur) -> None:
+        if self._table_exists(cur, "events"):
+            cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS announce_channel_id TEXT")
+        cur.execute("INSERT INTO schema_migrations (version) VALUES (8)")
 
     def _schema_version(self, cur) -> int:
         cur.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")

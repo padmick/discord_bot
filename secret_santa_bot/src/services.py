@@ -17,8 +17,13 @@ from present import (
     format_help,
     label,
     blocks_card,
+    anytime_hint_card,
     event_setup_card,
+    hints_index_card,
     match_card,
+    open_announcement_card,
+    resolve_hint,
+    setup_card,
     notes_card,
     profile_card,
     reports_card,
@@ -118,7 +123,7 @@ class EventService:
                 f"\nLast time these pairs were locked: {_lock_phrase(locks)}. "
                 "`s!carrylocks` keeps them. `s!unblock` drops one after that."
             )
-        return success(message, event_id=event["id"], carried_locks=locks)
+        return success(message, event_id=event["id"], event=event, carried_locks=locks)
 
     def join(self, guild_id: str, user_id: str, name: str) -> Result:
         self.close_expired_signups(date.today())
@@ -206,6 +211,111 @@ class EventService:
             f"**Last day to join is {parsed.isoformat()}.** "
             "People can join through that day. The gift deadline is separate."
         )
+
+    def setup_overview(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        card = setup_card(event)
+        return success(card.text(), card=card)
+
+    def apply_setup(
+        self,
+        guild_id: str,
+        actor_id: str,
+        is_admin: bool,
+        signup: str = "",
+        deadline: str = "",
+        cap: str = "",
+        rules: str = "",
+    ) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        signup_text = (signup or "").strip()
+        deadline_text = (deadline or "").strip()
+        cap_text = (cap or "").strip()
+        rules_text = (rules or "").strip()
+        if not any((signup_text, deadline_text, cap_text, rules_text)):
+            return success(
+                "Nothing changed. Fill in a line to set it, or type clear to remove it.",
+                card=setup_card(event),
+            )
+        fields: dict[str, Any] = {}
+        parsed_signup = None
+        if signup_text:
+            if signup_text.lower() == "clear":
+                fields["signup_deadline"] = None
+            else:
+                parsed_signup = _parse_day(signup_text)
+                if parsed_signup is None:
+                    return failure("bad_date", "Use a signup date like 2026-12-01, or clear.")
+                fields["signup_deadline"] = parsed_signup
+        if deadline_text:
+            if deadline_text.lower() == "clear":
+                fields["deadline"] = None
+            else:
+                parsed_deadline = _parse_day(deadline_text)
+                if parsed_deadline is None:
+                    return failure("bad_date", "Use a gift deadline like 2026-12-20, or clear.")
+                fields["deadline"] = parsed_deadline
+        if cap_text:
+            if cap_text.lower() == "clear":
+                fields["spending_cap"] = None
+            else:
+                cleaned_cap = " ".join(cap_text.split())
+                if len(cleaned_cap) > 80:
+                    return failure("too_long", "Keep the spending cap under 80 characters.")
+                fields["spending_cap"] = cleaned_cap
+        if rules_text:
+            if rules_text.lower() == "clear":
+                fields["rules"] = None
+            else:
+                cleaned_rules = " ".join(rules_text.split())
+                if len(cleaned_rules) > 500:
+                    return failure("too_long", "Keep the rules note under 500 characters.")
+                fields["rules"] = cleaned_rules
+        closed_now = (
+            parsed_signup is not None and event["phase"] == SIGNUP and date.today() > parsed_signup
+        )
+        if closed_now:
+            fields["phase"] = LOCKED
+        self.db.update_event(event["id"], **fields)
+        updated = self.db.get_event(event["id"]) or event
+        extra = " Signup is now closed because that date has passed." if closed_now else ""
+        return success("**Setup saved.**" + extra, card=setup_card(updated))
+
+    def prepare_announcement(self, guild_id: str, actor_id: str, is_admin: bool, channel_id: str) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        if event["phase"] != SIGNUP:
+            return failure("bad_phase", "The open announcement is for signup. Unlock signup before posting it.")
+        channel = str(channel_id or "").strip()
+        if not channel.isdigit():
+            return failure("bad_channel", "Choose a text channel in this server.")
+        card = open_announcement_card(event)
+        return success(card.text(), card=card, channel_id=channel)
+
+    def remember_announcement(self, guild_id: str, actor_id: str, is_admin: bool, channel_id: str) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        channel = str(channel_id or "").strip()
+        if not channel.isdigit():
+            return failure("bad_channel", "Choose a text channel in this server.")
+        self.db.update_event(event["id"], announce_channel_id=channel)
+        return success("Saved.", channel_id=channel)
+
+    def show_hint(self, topic: str = "") -> Result:
+        if not str(topic or "").strip():
+            card = hints_index_card()
+            return success(card.text(), card=card)
+        found = resolve_hint(topic)
+        if not found:
+            return failure("unknown_hint", "Try s!hint with no topic to see the list.")
+        card = anytime_hint_card(found)
+        return success(card.text(), card=card)
 
     def close_expired_signups(self, today: date) -> int:
         closed = 0

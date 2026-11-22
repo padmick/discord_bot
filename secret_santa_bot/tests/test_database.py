@@ -43,9 +43,10 @@ def test_past_partners_keep_the_latest_name_and_signup_date_round_trips(db):
     assert db.list_locked_pairs(first["id"]) == [("11", "22")]
 
     current = db.create_event("guild-history", "Year Three", "org")
-    db.update_event(current["id"], signup_deadline=date(2026, 12, 1))
+    db.update_event(current["id"], signup_deadline=date(2026, 12, 1), announce_channel_id="42")
     stored = db.get_event(current["id"])
     assert stored["signup_deadline"].isoformat() == "2026-12-01"
+    assert stored["announce_channel_id"] == "42"
 
 
 def test_organizer_lock_cap_and_rules_round_trip(db):
@@ -328,6 +329,7 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
         assert event["spending_cap"] is None
         assert event["rules"] is None
         assert event["signup_deadline"] is None
+        assert event["announce_channel_id"] is None
         assert manager.claim_changelog("ada", 1) is True
         assert manager.claim_changelog("ada", 1) is False
         assert manager.claim_changelog("ada", 2) is True
@@ -348,7 +350,7 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
             cursor.execute("SELECT tip_id FROM tips_seen WHERE user_id = 'ada' ORDER BY tip_id")
             assert [row[0] for row in cursor.fetchall()] == ["notes", "profile"]
             cursor.execute("SELECT MAX(version) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 7
+            assert cursor.fetchone()[0] == 8
     finally:
         check.close()
 

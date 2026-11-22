@@ -62,7 +62,9 @@ The process listens on `0.0.0.0:8080`. `/` and `/health` return 200 when the dat
 
 Server management (organizer or a server admin):
 
-- `s!create [name]` - Create an event. The organizer is not enrolled.
+- `s!create [name]` - Create an event and open the setup guide. The organizer is not enrolled.
+- `s!setup` - Open that guide again: signup date, gift deadline, spending cap, and rules.
+- `s!announce #channel` - Post in that channel that signup is open and how to join. The setup guide has the same channel menu.
 - `s!lock` / `s!unlock` - Close or reopen signup.
 - `s!deadline YYYY-MM-DD` - Set the gift deadline.
 - `s!signupby YYYY-MM-DD` - Set the last day people can join. `s!signupby clear` removes it. After that day, signup closes.
@@ -85,7 +87,7 @@ Server management (organizer or a server admin):
 
 Participants:
 
-- `s!join` / `s!leave` - Joining sends a DM that explains the event. `s!help` groups the commands, and `s!info` shows the same guide.
+- `s!join` / `s!leave` - Joining sends a DM that explains the event. The first join also sends the tutorial. `s!help` groups the commands, and `s!info` shows the same guide.
 - `s!profile` - Private form for wishlist, notes, address, and the digital-gift toggle.
 - `s!setwishlist <text>` / `s!setaddress <text>` / `s!setbudget <text>` - In a server channel, the command message is deleted. The spending limit is optional.
 - `s!myinfo` - DM your profile.
@@ -97,15 +99,16 @@ Participants:
 - `s!participants` / `s!status` / `s!info`
 - `s!problem <text>` / `s!idea <text>` - Save a problem report or a feature request. The note is stored and written to the log.
 - `s!news` - Show what has been added. The same note appears once on its own the next time someone uses the bot, then only when something new ships.
-- `s!tutorial` - Walk through the commands one page at a time. It starts only when someone asks. Back and Next move between the pages.
-- Hints appear once, and only after a related command. Joining mentions the profile. Messaging mentions emoji and GIFs. A what's-new note takes that turn instead of a hint.
+- `s!tutorial` - Walk through the commands one page at a time. It also arrives the first time someone joins. Back and Next move between the pages, and it starts again whenever someone asks.
+- `s!hint` - List the hints, or show one again with `s!hint profile`. This works anytime.
+- Hints also appear once after a related command. Joining mentions the profile. Messaging mentions emoji and GIFs. A what's-new note takes that turn instead of a hint.
 
 `s!match`, `s!message`, `s!myinfo`, `s!profile`, and `s!status` work in a DM when you are in exactly one open event.
 
 ## Event flow
 
-1. An organizer creates the event with `s!create`.
-2. Participants join, get a DM explaining the event, and fill in a wishlist. A shipping address is required unless the gift is digital.
+1. An organizer creates the event with `s!create` and follows the setup guide. `s!announce #channel` tells that channel how to join.
+2. Participants join, get a DM explaining the event, and fill in a wishlist. The first time they join, the tutorial arrives too. A shipping address is required unless the gift is digital.
 3. Optional: set the last day to join with `s!signupby`, lock signup, set a gift deadline, copy last year's locks with `s!carrylocks`, skip past matches, and set reminder timing with `s!settings`.
 4. `s!start` writes a draw only when every profile is complete and a valid derangement exists.
 5. Each person is DMed their recipient. The organizer does not receive the full list.
