@@ -132,10 +132,15 @@ class EventService:
             return event
         if event["phase"] != SIGNUP:
             return failure("closed", "Joining is closed for this event.")
+        person = label(name, "Someone")
+        event_name = label(event["name"], "Secret Santa")
+        existing = self.db.get_participant(event["id"], str(user_id))
         self.db.add_participant(event["id"], str(user_id), name)
+        if existing:
+            return success(f"**{person}** is already in **{event_name}**.")
         partners = self.db.list_past_partners(str(guild_id), str(user_id))
         return success(
-            f"**{label(name, 'Someone')}** joined **{label(event['name'], 'Secret Santa')}**.",
+            f"**{person}** joined **{event_name}**.",
             welcome=welcome_card(name, event["name"], event.get("rules") or "", partners),
             past_partners=partners,
         )

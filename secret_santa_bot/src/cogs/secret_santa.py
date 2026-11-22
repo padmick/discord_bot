@@ -249,7 +249,7 @@ class SecretSantaCog(commands.Cog):
             PastPartnerView(self, str(ctx.guild.id), str(ctx.author.id), partners) if welcome is not None and partners else None
         )
         delivered = await self._dm_card(str(ctx.author.id), welcome, view=history) if welcome is not None else False
-        if result.ok:
+        if result.ok and welcome is not None:
             log_event("JOIN", f"guild {ctx.guild.id} user {ctx.author.id}")
         if welcome is not None and delivered:
             await _say(ctx, result.message + "\nThe welcome is in your DMs.")

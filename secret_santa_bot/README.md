@@ -87,7 +87,7 @@ Server management (organizer or a server admin):
 
 Participants:
 
-- `s!join` / `s!leave` - Joining sends a short welcome DM: fill in your profile, plus any rules or past matches. `s!help` groups the commands, and `s!info` shows the full guide. `s!tutorial` is there when someone asks.
+- `s!join` / `s!leave` - Joining sends a short welcome DM: fill in your profile, plus any rules or past matches. Joining again in the same event says you're already in and does not send that DM. `s!help` groups the commands, and `s!info` shows the full guide. `s!tutorial` is there when someone asks.
 - `s!profile` - Private form for wishlist, notes, address, and the digital-gift toggle.
 - `s!setwishlist <text>` / `s!setaddress <text>` / `s!setbudget <text>` - In a server channel, the command message is deleted. The spending limit is optional.
 - `s!myinfo` - DM your profile.

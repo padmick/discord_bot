@@ -316,8 +316,11 @@ def test_create_does_not_enroll_the_organizer_and_join_keeps_them():
     assert event["organizer_id"] == "org"
     assert database.list_participants(event["id"]) == []
 
-    assert svc.join("guild", "org", "Organizer").ok
-    assert svc.join("guild", "org", "Renamed").ok
+    first = svc.join("guild", "org", "Organizer")
+    assert first.ok and "welcome" in first.data
+    again = svc.join("guild", "org", "Renamed")
+    assert again.ok and again.data is None
+    assert "already in" in again.message
     assert database.get_open_event("guild")["organizer_id"] == "org"
     assert database.get_participant(event["id"], "org")["name"] == "Renamed"
     assert database.get_participant(event["id"], "org")["wishlist"] is None
