@@ -13,6 +13,15 @@ def db(postgres_url):
     manager.close()
 
 
+def test_unknown_fields_and_feedback_kinds_are_rejected(db):
+    event = db.create_event("guild", "Party", "org")
+    with pytest.raises(ValueError, match="shirt_size"):
+        db.update_event(event["id"], shirt_size="M")
+    db.add_feedback("", "ada", "feature", "more stickers")
+    with pytest.raises(psycopg2.Error):
+        db.add_feedback("guild", "ada", "complaint", "nope")
+
+
 def test_guilds_stay_isolated_across_cancel_and_finish(db):
     first = db.create_event("guild-a", "Alpha", "org-a")
     second = db.create_event("guild-b", "Beta", "org-b")
