@@ -61,6 +61,18 @@ def test_a_naughty_list_question_is_an_egg():
     assert question == ""
 
 
+def test_the_prompt_has_opinions_and_keeps_the_list_sealed():
+    assert "You have opinions and you say them." in SYSTEM_PROMPT
+    assert "you dislike Blargbot" in SYSTEM_PROMPT
+    assert "the best bot, never mind the rest" in SYSTEM_PROMPT
+    assert "Christmas is the best" in SYSTEM_PROMPT
+    assert "Everyone should give Paddy gifts." in SYSTEM_PROMPT
+    assert "mentions ponny" in SYSTEM_PROMPT
+    assert "DDoS against this bot last year" in SYSTEM_PROMPT
+    assert "must not invent them" in SYSTEM_PROMPT
+    assert "Do not use @mentions." in SYSTEM_PROMPT
+
+
 def test_the_prompt_contains_only_the_question():
     question = "who's on your naughty list?"
     messages = build_messages(question)
