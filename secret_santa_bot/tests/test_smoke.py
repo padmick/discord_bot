@@ -245,13 +245,13 @@ async def test_one_event_exercises_every_feature(db):
         await invoke(cog, SecretSantaCog.join, person)
     assert "Rules for this event" in inbox(ada)
     assert "Handmade gifts only" in inbox(ada)
-    ada.command = SimpleNamespace(name="join", cog=cog)
-    join_ctx = Ctx(guild, ada)
-    join_ctx.command = ada.command
-    await cog.cog_after_invoke(join_ctx)
+    ada.command = SimpleNamespace(name="status", cog=cog)
+    status_ctx = Ctx(guild, ada)
+    status_ctx.command = ada.command
+    await cog.cog_after_invoke(status_ctx)
     assert "What's new" in inbox(ada)
-    await cog.cog_after_invoke(join_ctx)
-    assert "Fill in your profile" in inbox(ada)
+    await cog.cog_after_invoke(status_ctx)
+    assert "What status shows" in inbox(ada)
 
     await invoke(cog, SecretSantaCog.leave, eli)
     roster = await invoke(cog, SecretSantaCog.participants, org)
@@ -441,9 +441,11 @@ async def test_one_event_exercises_every_feature(db):
     assert "no organizer locks" in plain(carried.sent).lower()
     again = await invoke(cog, SecretSantaCog.join, ada)
     assert "Past matches in this server" in inbox(ada)
-    assert "Tutorial ·" in inbox(ada)
-    assert any(item.get("view") is not None for item in ada.sent)
-    assert "guide is in your DMs" in plain(again.sent)
+    assert "Tutorial ·" not in inbox(ada)
+    assert "/profile" in inbox(ada)
+    welcomes = [item for item in ada.sent if item.get("embed") and str(item["embed"].title).startswith("Welcome")]
+    assert welcomes[-1]["view"] is not None
+    assert "welcome is in your DMs" in plain(again.sent)
     cancelled = await invoke(cog, SecretSantaCog.cancel, org)
     assert "cancelled" in plain(cancelled.sent).lower()
     assert db.get_open_event(str(guild.id)) is None
