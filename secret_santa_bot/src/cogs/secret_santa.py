@@ -42,9 +42,15 @@ from utils import log_event, report_failure
 from views import (
     AnnounceChannelPicker,
     NotificationSettingsView,
+    PastMatchSelect,
+    PastPartnerSelect,
     PastPartnerView,
+    ProfileDigitalButton,
+    ProfileEditButton,
     ProfileView,
+    ProfileWindowButton,
     ReplyView,
+    SettingsEditButton,
     SetupButton,
     SetupView,
     TutorialView,
@@ -95,12 +101,30 @@ class SecretSantaCog(commands.Cog):
         self.bot.add_view(ReplyView("gifter"))
         self.bot.add_view(ReplyView("giftee"))
         self.bot.add_view(TutorialView(0))
-        self.bot.add_dynamic_items(SetupButton, AnnounceChannelPicker)
+        self.bot.add_dynamic_items(
+            SetupButton,
+            AnnounceChannelPicker,
+            ProfileEditButton,
+            ProfileWindowButton,
+            ProfileDigitalButton,
+            PastMatchSelect,
+            PastPartnerSelect,
+            SettingsEditButton,
+        )
         self.daily_reminders.start()
 
     def cog_unload(self):
         self.daily_reminders.cancel()
-        self.bot.remove_dynamic_items(SetupButton, AnnounceChannelPicker)
+        self.bot.remove_dynamic_items(
+            SetupButton,
+            AnnounceChannelPicker,
+            ProfileEditButton,
+            ProfileWindowButton,
+            ProfileDigitalButton,
+            PastMatchSelect,
+            PastPartnerSelect,
+            SettingsEditButton,
+        )
 
     async def cog_before_invoke(self, ctx):
         if _is_admin(ctx):

@@ -486,6 +486,131 @@ async def test_delivery_window_button_saves_an_optional_note():
     assert "Profile saved" in submitted.followup.messages[-1]
 
 
+async def test_profile_buttons_answer_after_the_sending_view_is_gone():
+    """Profile, delivery window, and digital gift still answer after the view is gone."""
+    import discord
+    from discord.components import ActionRow
+    from discord.ui.view import ViewStore
+
+    from views import DeliveryWindowModal, ProfileDigitalButton, ProfileEditButton, ProfileModal, ProfileView, ProfileWindowButton
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    ready_participant(svc, "guild", "11", "Ada")
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+    class Response:
+        def __init__(self):
+            self.done = False
+            self.modals = []
+            self.messages = []
+
+        def is_done(self):
+            return self.done
+
+        async def send_message(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+            self.done = True
+
+        async def send_modal(self, modal):
+            self.modals.append(modal)
+            self.done = True
+
+    class Client:
+        def get_cog(self, name):
+            assert name == "SecretSantaCog"
+            return cog
+
+    cog = Cog()
+    view = ProfileView(cog, "guild", "11", True)
+    assert view.timeout is None
+    rows = [ActionRow(row) for row in view.to_components()]
+
+    async def click(button_cls):
+        button = next(child for child in view.children if isinstance(child, button_cls))
+        response = Response()
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id="11"),
+            response=response,
+            message=SimpleNamespace(id=99, components=rows),
+            data={"custom_id": button.custom_id, "component_type": discord.ComponentType.button.value},
+            client=Client(),
+        )
+        store = ViewStore(SimpleNamespace())
+        store.add_dynamic_items(button_cls)
+        await store.schedule_dynamic_item_call(
+            discord.ComponentType.button.value,
+            button_cls,
+            interaction,
+            button.custom_id,
+            button.template.fullmatch(button.custom_id),
+        )
+        return response
+
+    edited = await click(ProfileEditButton)
+    assert isinstance(edited.modals[0], ProfileModal)
+    window = await click(ProfileWindowButton)
+    assert isinstance(window.modals[0], DeliveryWindowModal)
+    # The view was built with digital_only True. The click reads the saved
+    # profile, which is still off, so the first click turns it on.
+    turned_on = await click(ProfileDigitalButton)
+    assert "Digital gift is on" in turned_on.messages[-1]
+    turned_off = await click(ProfileDigitalButton)
+    assert "Digital gift is off" in turned_off.messages[-1]
+    event = database.get_open_event("guild")
+    assert database.get_participant(event["id"], "11")["digital_only"] is False
+
+
+async def test_one_digital_click_is_not_applied_twice():
+    """The live view and the dynamic item both see one click. It flips once."""
+    import asyncio
+
+    from views import ProfileView
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    ready_participant(svc, "guild", "11", "Ada")
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+    class Response:
+        def __init__(self):
+            self.done = False
+            self.messages = []
+
+        def is_done(self):
+            return self.done
+
+        async def send_message(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+            self.done = True
+
+    cog = Cog()
+    view = ProfileView(cog, "guild", "11", False)
+    response = Response()
+    interaction = SimpleNamespace(id=4242, user=SimpleNamespace(id="11"), response=response)
+    await asyncio.gather(
+        view.toggle_digital.callback(interaction),
+        view.toggle_digital.callback(interaction),
+    )
+    event = database.get_open_event("guild")
+    assert database.get_participant(event["id"], "11")["digital_only"] is True
+    assert response.messages == ["Digital gift is on. An address is not required."]
+
+
 def test_delivery_window_is_optional_and_shown_to_the_giver():
     svc, database = service()
     svc.create_event("guild", "org", "Party")
