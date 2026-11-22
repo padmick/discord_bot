@@ -216,6 +216,8 @@ async def test_one_event_exercises_every_feature(db):
     assert "Handmade gifts only" in plain(shown.sent)
     assert "$25" in plain(shown.sent)
     await invoke(cog, SecretSantaCog.deadline, org, deadline)
+    signup = await invoke(cog, SecretSantaCog.signupby, org, day=deadline)
+    assert "through that day" in plain(signup.sent).lower()
 
     settings = await invoke(cog, SecretSantaCog.settings, org)
     settings_view = settings.sent[-1]["view"]
@@ -371,6 +373,11 @@ async def test_one_event_exercises_every_feature(db):
     ada_row = next(row for row in db.list_pairings(db.get_open_event(str(guild.id))["id"]) if row["giver_id"] == "111")
     assert ada_row["gift_status"] == "received"
     assert ada_row["tracking_url"] == "https://track.example/parcel"
+    pending = await invoke(cog, SecretSantaCog.waiting, org)
+    still = _titled(org, "Still to ship")
+    assert "not bought" in still
+    assert "Ada" not in still
+    assert "Sent in a DM" in plain(pending.sent)
 
     changed = await invoke(cog, SecretSantaCog.setwishlist, ada_giftee, wishlist="Books, tea, and honey")
     assert "Profile saved" in inbox(ada_giftee) or "Profile saved" in plain(changed.sent)
@@ -428,6 +435,12 @@ async def test_one_event_exercises_every_feature(db):
     finished = await invoke(cog, SecretSantaCog.finish, org)
     assert "finished" in plain(finished.sent).lower()
     await invoke(cog, SecretSantaCog.create, org, name="Next year")
+    carried = await invoke(cog, SecretSantaCog.carrylocks, org)
+    assert "no organizer locks" in plain(carried.sent).lower()
+    again = await invoke(cog, SecretSantaCog.join, ada)
+    assert "Past matches in this server" in inbox(ada)
+    assert any(item.get("view") is not None for item in ada.sent)
+    assert "guide is in your DMs" in plain(again.sent)
     cancelled = await invoke(cog, SecretSantaCog.cancel, org)
     assert "cancelled" in plain(cancelled.sent).lower()
     assert db.get_open_event(str(guild.id)) is None

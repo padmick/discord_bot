@@ -64,7 +64,10 @@ Server management (organizer or a server admin):
 
 - `s!create [name]` - Create an event. The organizer is not enrolled.
 - `s!lock` / `s!unlock` - Close or reopen signup.
-- `s!deadline YYYY-MM-DD` - Set the shipping deadline.
+- `s!deadline YYYY-MM-DD` - Set the gift deadline.
+- `s!signupby YYYY-MM-DD` - Set the last day people can join. `s!signupby clear` removes it. After that day, signup closes.
+- `s!waiting` - DM the organizer who has not shipped. The list has names only, not their match.
+- `s!carrylocks` - Copy organizer locks from the last finished event in this server. `s!unblock` drops one.
 - `s!start` - Draw matches and DM them. No preview is sent.
 - `s!reveal reveal` - DM the organizer the full draw. This breaks anonymity.
 - `s!finish` - Archive a drawn event so another can be created.
@@ -103,7 +106,7 @@ Participants:
 
 1. An organizer creates the event with `s!create`.
 2. Participants join, get a DM explaining the event, and fill in a wishlist. A shipping address is required unless the gift is digital.
-3. Optional: lock signup, set a deadline, skip past matches, and set reminder timing with `s!settings`.
+3. Optional: set the last day to join with `s!signupby`, lock signup, set a gift deadline, copy last year's locks with `s!carrylocks`, skip past matches, and set reminder timing with `s!settings`.
 4. `s!start` writes a draw only when every profile is complete and a valid derangement exists.
 5. Each person is DMed their recipient. The organizer does not receive the full list.
 6. Pairs can message anonymously and mark the gift bought, shipped, and received.

@@ -49,6 +49,7 @@ class FakeDB:
             "shipping_lead_days": 3,
             "spending_cap": None,
             "rules": None,
+            "signup_deadline": None,
         }
         return dict(self.events[event_id])
 
@@ -182,6 +183,45 @@ class FakeDB:
             seen.add(key)
             pairs.append(key)
         return pairs
+
+    def latest_finished_event(self, guild_id):
+        done = [
+            event
+            for event in self.events.values()
+            if event["guild_id"] == str(guild_id) and event["phase"] == "done"
+        ]
+        if not done:
+            return None
+        return dict(max(done, key=lambda event: event["id"]))
+
+    def list_past_partners(self, guild_id, user_id):
+        user_id = str(user_id)
+        found = {}
+        finished = sorted(
+            (
+                event
+                for event in self.events.values()
+                if event["guild_id"] == str(guild_id) and event["phase"] == "done"
+            ),
+            key=lambda event: event["id"],
+            reverse=True,
+        )
+        for event in finished:
+            for row in self.pairings.get(event["id"], []):
+                other = None
+                if row["giver_id"] == user_id:
+                    other = row["receiver_id"]
+                elif row["receiver_id"] == user_id:
+                    other = row["giver_id"]
+                if not other or other == user_id or other in found:
+                    continue
+                person = self.participants.get((event["id"], other))
+                found[other] = person["name"] if person else "Someone"
+                if len(found) == 25:
+                    break
+            if len(found) == 25:
+                break
+        return [{"user_id": other, "name": name} for other, name in found.items()]
 
     def replace_pairings(self, event_id, pairs):
         self.replace_calls += 1
@@ -678,6 +718,183 @@ async def test_notification_form_saves_the_organizer_choices():
     await modal.on_submit(rejected)
     assert database.get_open_event("guild")["profile_reminders"] is False
     assert "organizer" in rejected.followup.messages[0].lower()
+
+
+def test_past_matches_locks_and_unshipped_names_stay_separate():
+    svc, database = service()
+    svc.create_event("guild", "org", "Year One")
+    ready_participant(svc, "guild", "11", "Ada")
+    ready_participant(svc, "guild", "22", "Bea")
+    ready_participant(svc, "guild", "33", "Cara")
+    ready_participant(svc, "guild", "44", "Dee")
+    assert svc.block_pair("guild", "org", False, "11", "Ada", "22", "Bea").ok
+    assert svc.start("guild", "org", False).ok
+    first_id = database.get_open_event("guild")["id"]
+    drawn = {row["giver_id"]: row["receiver_id"] for row in database.list_pairings(first_id)}
+    assert drawn["11"] != "22" and drawn["22"] != "11"
+    assert svc.set_gift_status("guild", "11", "bought").ok
+    assert svc.set_gift_status("guild", "11", "shipped").ok
+    report = svc.unshipped("guild", "org", False)
+    assert report.ok
+    assert {row["user_id"] for row in report.data["waiting"]} == {"22", "33", "44"}
+    assert all(set(row) == {"user_id", "name", "gift_status"} for row in report.data["waiting"])
+    names = {"11": "Ada", "22": "Bea", "33": "Cara", "44": "Dee"}
+    for row in report.data["waiting"]:
+        line = next(line for line in report.card.description.splitlines() if line.startswith(names[row["user_id"]]))
+        receiver = names[drawn[row["user_id"]]]
+        if receiver != names[row["user_id"]]:
+            assert receiver not in line
+    assert svc.unshipped("guild", "11", False).code == "forbidden"
+    assert svc.finish("guild", "org", False).ok
+
+    created = svc.create_event("guild", "org", "Year Two")
+    assert "s!carrylocks" in created.message
+    assert "Ada" in created.message and "Bea" in created.message
+    joined = svc.join("guild", "11", "Ada")
+    expected = {receiver for giver, receiver in drawn.items() if giver == "11"}
+    expected.update(giver for giver, receiver in drawn.items() if receiver == "11")
+    assert {person["user_id"] for person in joined.data["past_partners"]} == expected
+    assert "Past matches in this server" in joined.data["welcome"].text()
+    second_id = database.get_open_event("guild")["id"]
+    assert database.list_exclusions(second_id) == set()
+    kept = joined.data["past_partners"][0]
+    assert svc.skip_past_matches("guild", "11", [(kept["user_id"], kept["name"])]).ok
+    assert ("11", kept["user_id"]) in database.list_exclusions(second_id)
+    for other in joined.data["past_partners"][1:]:
+        assert ("11", other["user_id"]) not in database.list_exclusions(second_id)
+
+    carried = svc.carry_locks("guild", "org", False)
+    assert carried.ok
+    assert ("11", "22") in database.list_exclusions(second_id)
+    assert svc.unexclude("guild", "11", "22", "Bea").code == "locked"
+    assert svc.carry_locks("guild", "11", False).code == "forbidden"
+
+
+def test_carry_uses_only_the_latest_finished_event():
+    svc, database = service()
+    svc.create_event("guild", "org", "Old")
+    for user_id, name in (("11", "Ada"), ("22", "Bea"), ("33", "Cara"), ("44", "Dee")):
+        ready_participant(svc, "guild", user_id, name)
+    assert svc.block_pair("guild", "org", False, "11", "Ada", "22", "Bea").ok
+    assert svc.start("guild", "org", False).ok
+    assert svc.finish("guild", "org", False).ok
+    svc.create_event("guild", "org", "Middle")
+    for user_id, name in (("11", "Ada"), ("22", "Bea"), ("33", "Cara"), ("44", "Dee")):
+        ready_participant(svc, "guild", user_id, name)
+    assert svc.start("guild", "org", False).ok
+    assert svc.finish("guild", "org", False).ok
+    svc.create_event("guild", "org", "New")
+    quiet = svc.carry_locks("guild", "org", False)
+    assert "no organizer locks" in quiet.message.lower()
+    assert database.list_locked_pairs(database.get_open_event("guild")["id"]) == []
+
+
+def test_signup_date_closes_joining_and_leaves_the_gift_deadline():
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    today = date.today()
+    assert svc.set_signup_deadline("guild", "11", False, today.isoformat()).code == "forbidden"
+    assert svc.set_signup_deadline("guild", "org", False, "tomorrow").code == "bad_date"
+    saved = svc.set_signup_deadline("guild", "org", False, today.isoformat())
+    assert saved.ok
+    assert "through that day" in saved.message
+    assert database.get_open_event("guild")["phase"] == "signup"
+    assert svc.join("guild", "11", "Ada").ok
+    assert svc.close_expired_signups(today) == 0
+    assert svc.close_expired_signups(today + timedelta(days=1)) == 1
+    assert database.get_open_event("guild")["phase"] == "locked"
+    assert svc.join("guild", "22", "Bea").code == "closed"
+    assert svc.unlock("guild", "org", False).ok
+    assert database.get_open_event("guild")["phase"] == "signup"
+    closed = svc.set_signup_deadline("guild", "org", False, (today - timedelta(days=1)).isoformat())
+    assert closed.ok
+    assert "now closed" in closed.message
+    assert database.get_open_event("guild")["phase"] == "locked"
+    assert svc.unlock("guild", "org", False).code == "signup_closed"
+    cleared = svc.set_signup_deadline("guild", "org", False, "clear")
+    assert cleared.ok
+    assert database.get_open_event("guild")["phase"] == "locked"
+    assert database.get_open_event("guild")["signup_deadline"] is None
+    assert svc.unlock("guild", "org", False).ok
+    assert svc.join("guild", "22", "Bea").ok
+    assert svc.set_deadline("guild", "org", False, "2026-12-20").ok
+    assert svc.set_signup_deadline("guild", "org", False, (today - timedelta(days=1)).isoformat()).ok
+    event = database.get_open_event("guild")
+    assert event["phase"] == "locked"
+    assert event["deadline"].isoformat() == "2026-12-20"
+    assert event["signup_deadline"] == today - timedelta(days=1)
+    status = svc.status("guild")
+    assert "Last day to join" in status.message
+    assert "Gift deadline" in status.message
+    assert "2026-12-20" in status.message
+    shown = svc.set_signup_deadline("guild", "org", False, "")
+    assert shown.ok
+    assert (today - timedelta(days=1)).isoformat() in shown.message
+    assert "2026-12-20" in shown.message
+
+
+async def test_past_partner_menu_skips_only_the_people_you_choose():
+    from views import PastPartnerView
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Year One")
+    ready_participant(svc, "guild", "11", "Ada")
+    ready_participant(svc, "guild", "22", "Bea")
+    ready_participant(svc, "guild", "33", "Cara")
+    ready_participant(svc, "guild", "44", "Dee")
+    assert svc.start("guild", "org", False).ok
+    assert svc.finish("guild", "org", False).ok
+    svc.create_event("guild", "org", "Year Two")
+    joined = svc.join("guild", "11", "Ada")
+    assert len(joined.data["past_partners"]) >= 1
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+    class Response:
+        def __init__(self):
+            self.done = False
+            self.messages = []
+
+        def is_done(self):
+            return self.done
+
+        async def defer(self, ephemeral=False):
+            del ephemeral
+            self.done = True
+
+        async def send_message(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+            self.done = True
+
+    class Followup:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+
+    view = PastPartnerView(Cog(), "guild", "11", joined.data["past_partners"])
+    select = view.children[0]
+    chosen = joined.data["past_partners"][0]["user_id"]
+    select._values = [chosen]
+    interaction = SimpleNamespace(user=SimpleNamespace(id="11"), response=Response(), followup=Followup())
+    await select.callback(interaction)
+    event_id = database.get_open_event("guild")["id"]
+    assert ("11", chosen) in database.list_exclusions(event_id)
+    for other in joined.data["past_partners"][1:]:
+        assert ("11", other["user_id"]) not in database.list_exclusions(event_id)
+    assert "won't be paired" in interaction.followup.messages[-1]
+
+    stranger = SimpleNamespace(user=SimpleNamespace(id="22"), response=Response(), followup=Followup())
+    await select.callback(stranger)
+    assert "belongs to the person" in stranger.response.messages[0]
 
 
 def test_organizer_locks_spending_cap_and_rules():
