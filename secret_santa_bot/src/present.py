@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import discord
 
 # Bump this, and rewrite changelog_card, when a release should show a new note.
-CHANGELOG_VERSION = 3
+CHANGELOG_VERSION = 4
 
 SANTA_RED = 0xC23B22
 GIFT_STATUSES = ("not_bought", "bought", "shipped", "received")
@@ -51,6 +51,7 @@ HELP_GROUPS = (
             "lock",
             "unlock",
             "deadline",
+            "signupby",
             "start",
             "finish",
             "cancel",
@@ -62,6 +63,8 @@ HELP_GROUPS = (
             "block",
             "unblock",
             "blocks",
+            "carrylocks",
+            "waiting",
             "cap",
             "rules",
             "logs",
@@ -175,10 +178,11 @@ def guide_fields() -> tuple[Field, ...]:
         Field(
             "Running the event",
             "`s!create` opens one event in this server. The organizer is not in the draw until they join.\n"
-            "`s!lock`, `s!deadline`, and `s!settings` are optional. `s!settings` chooses which reminders "
-            "go out and how many days apart. `s!remind` sends a profile reminder immediately.\n"
-            "`s!block` keeps two people apart, and they cannot undo it. `s!cap` sets a spending cap. "
-            "`s!rules` adds a short note to the welcome and the match.\n"
+            "`s!lock`, `s!deadline`, and `s!settings` are optional. `s!signupby` is the last day to join. "
+            "`s!settings` chooses which reminders go out and how many days apart.\n"
+            "`s!block` keeps two people apart. `s!carrylocks` copies last year's locks. "
+            "`s!cap` sets a spending cap. `s!rules` adds a short note.\n"
+            "`s!waiting` names who has not shipped, without the match.\n"
             "`s!finish` archives a drawn event so another can be created.",
         ),
         Field(
@@ -191,13 +195,28 @@ def guide_fields() -> tuple[Field, ...]:
     )
 
 
-def welcome_card(person_name: object, event_name: object, rules: str = "") -> Card:
+def welcome_card(
+    person_name: object,
+    event_name: object,
+    rules: str = "",
+    past_partners: list | None = None,
+) -> Card:
     person = label(person_name, "there")
     event = label(event_name, "Secret Santa")
     fields: list[Field] = []
     note = str(rules or "").strip()
     if note:
         fields.append(Field("Rules for this event", shown(note, "")))
+    history = [partner for partner in (past_partners or []) if partner]
+    if history:
+        names = ", ".join(label(partner.get("name"), "Someone") for partner in history[:25])
+        fields.append(
+            Field(
+                "Past matches in this server",
+                f"{names}\nChoose who to skip again on the menu. Anyone you leave off can be drawn. "
+                "`s!unexclude` drops someone after you skip them.",
+            )
+        )
     fields.extend(guide_fields())
     return Card(
         title=f"Welcome to {event}"[:256],
@@ -264,7 +283,8 @@ def status_card(payload: dict) -> Card:
     detail = PHASE_DETAIL.get(phase, "")
     fields = [
         Field("Phase", f"{phase}\n{detail}".strip(), inline=True),
-        Field("Deadline", str(payload.get("deadline") or "Not set"), inline=True),
+        Field("Last day to join", str(payload.get("signup_deadline") or "Not set"), inline=True),
+        Field("Gift deadline", str(payload.get("deadline") or "Not set"), inline=True),
         Field("Participants", str(payload.get("count", 0)), inline=True),
     ]
     missing_wishlist = payload.get("missing_wishlist") or []
@@ -598,16 +618,16 @@ def changelog_card() -> Card:
         description="A quick look at the latest Secret Santa updates.",
         fields=(
             Field(
-                "Locked pairs",
-                "The organizer can keep two people from being matched with `s!block`. They cannot remove that lock.",
+                "Past matches",
+                "When you join, the menu lists people you were paired with in this server before. Choose who to skip.",
             ),
             Field(
-                "Spending cap",
-                "`s!cap` sets one spending cap for the event. It shows on a match when that person has not set their own.",
+                "Still to ship",
+                "`s!waiting` DMs the organizer the names of people who have not shipped. The match stays hidden.",
             ),
             Field(
-                "Rules",
-                "`s!rules` adds a short note. It appears in the welcome DM and on the match.",
+                "Signup date",
+                "`s!signupby` sets the last day to join. The gift deadline stays on `s!deadline`.",
             ),
         ),
         footer="This shows once. A new note appears only when something new ships.",
@@ -631,6 +651,22 @@ def _person_label(user_id: object) -> str:
     if text.isdigit():
         return f"<@{text}>"
     return "Someone"
+
+
+def waiting_card(rows: list[dict]) -> Card:
+    lines = [
+        f"{label(row.get('name'), 'Someone')} — {str(row.get('gift_status') or 'not_bought').replace('_', ' ')}"
+        for row in rows
+    ]
+    if lines:
+        description = "\n".join(lines)
+    else:
+        description = "Everyone has marked the gift shipped, or it has been received."
+    return Card(
+        title="Still to ship",
+        description=description,
+        footer="Names only. Their match is not listed. This is sent in a DM.",
+    )
 
 
 def blocks_card(pairs: list[tuple[str, str]]) -> Card:

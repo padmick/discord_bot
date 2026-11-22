@@ -1,3 +1,5 @@
+from datetime import date
+
 import psycopg2
 import pytest
 
@@ -11,6 +13,39 @@ def db(postgres_url):
     yield manager
     manager.reset()
     manager.close()
+
+
+def test_past_partners_keep_the_latest_name_and_signup_date_round_trips(db):
+    first = db.create_event("guild-history", "Year One", "org")
+    db.add_participant(first["id"], "11", "Ada")
+    db.add_participant(first["id"], "22", "Bea Old")
+    db.replace_pairings(first["id"], [("11", "22", "received"), ("22", "11", "received")])
+    db.add_exclusion_pair(first["id"], "11", "22", locked=True)
+    db.update_event(first["id"], phase="done")
+
+    second = db.create_event("guild-history", "Year Two", "org")
+    db.add_participant(second["id"], "11", "Ada")
+    db.add_participant(second["id"], "22", "Bea New")
+    db.add_participant(second["id"], "33", "Cara")
+    db.replace_pairings(
+        second["id"],
+        [("11", "22", "received"), ("22", "33", "received"), ("33", "11", "received")],
+    )
+    db.update_event(second["id"], phase="done", signup_deadline=None)
+
+    partners = {row["user_id"]: row["name"] for row in db.list_past_partners("guild-history", "11")}
+    assert partners["22"] == "Bea New"
+    assert partners["33"] == "Cara"
+    assert "11" not in partners
+    latest = db.latest_finished_event("guild-history")
+    assert latest["id"] == second["id"]
+    assert db.list_locked_pairs(latest["id"]) == []
+    assert db.list_locked_pairs(first["id"]) == [("11", "22")]
+
+    current = db.create_event("guild-history", "Year Three", "org")
+    db.update_event(current["id"], signup_deadline=date(2026, 12, 1))
+    stored = db.get_event(current["id"])
+    assert stored["signup_deadline"].isoformat() == "2026-12-01"
 
 
 def test_organizer_lock_cap_and_rules_round_trip(db):
@@ -292,6 +327,7 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
         assert event["shipping_lead_days"] == 3
         assert event["spending_cap"] is None
         assert event["rules"] is None
+        assert event["signup_deadline"] is None
         assert manager.claim_changelog("ada", 1) is True
         assert manager.claim_changelog("ada", 1) is False
         assert manager.claim_changelog("ada", 2) is True
@@ -312,7 +348,7 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
             cursor.execute("SELECT tip_id FROM tips_seen WHERE user_id = 'ada' ORDER BY tip_id")
             assert [row[0] for row in cursor.fetchall()] == ["notes", "profile"]
             cursor.execute("SELECT MAX(version) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 6
+            assert cursor.fetchone()[0] == 7
     finally:
         check.close()
 

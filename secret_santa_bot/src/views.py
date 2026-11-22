@@ -335,6 +335,58 @@ class NotificationSettingsView(discord.ui.View):
         await report_component_failure(f"notification settings guild {self.guild_id}", interaction, error)
 
 
+class PastPartnerSelect(discord.ui.Select):
+    """Finished-event partners. The person chooses which ones to skip again."""
+
+    def __init__(self, options: list[discord.SelectOption]):
+        super().__init__(
+            placeholder="Choose who to skip again",
+            min_values=1,
+            max_values=len(options),
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, PastPartnerView):
+            await interaction.response.send_message("This menu is not available right now.", ephemeral=True)
+            return
+        if str(interaction.user.id) != view.user_id:
+            await interaction.response.send_message("This menu belongs to the person who joined.", ephemeral=True)
+            return
+        names = {str(person["user_id"]): person.get("name") or "" for person in view.partners}
+        chosen = [(value, names.get(value, "")) for value in self.values if value in names]
+        if not chosen:
+            await interaction.response.send_message("Choose someone from the list.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await view.cog.run(
+            view.cog.service.skip_past_matches,
+            view.guild_id,
+            view.user_id,
+            chosen,
+        )
+        await interaction.followup.send(result.message, ephemeral=True)
+
+
+class PastPartnerView(discord.ui.View):
+    def __init__(self, cog, guild_id: str, user_id: str, partners: list[dict]):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        self.partners = [person for person in partners if person.get("user_id")][:25]
+        options = [
+            discord.SelectOption(
+                label=(person.get("name") or "Someone")[:100],
+                value=str(person["user_id"])[:100],
+            )
+            for person in self.partners
+        ]
+        if options:
+            self.add_item(PastPartnerSelect(options))
+
+
 def _interaction_is_admin(interaction) -> bool:
     permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
     return bool(permissions and permissions.administrator)

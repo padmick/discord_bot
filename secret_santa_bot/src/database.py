@@ -13,7 +13,7 @@ EVENT_FIELDS = (
     "id, guild_id, name, phase, organizer_id, deadline, "
     "last_profile_reminder, last_shipping_reminder, "
     "profile_reminders, shipping_reminders, reminder_interval_days, shipping_lead_days, "
-    "spending_cap, rules"
+    "spending_cap, rules, signup_deadline"
 )
 
 
@@ -46,6 +46,7 @@ EVENT_UPDATE_FIELDS = {
     "shipping_lead_days",
     "spending_cap",
     "rules",
+    "signup_deadline",
 }
 
 
@@ -409,6 +410,55 @@ class DatabaseManager:
 
         return self._run(query)
 
+    def latest_finished_event(self, guild_id: str) -> dict[str, Any] | None:
+        def query(cur):
+            cur.execute(
+                f"""
+                SELECT {EVENT_FIELDS}
+                FROM events
+                WHERE guild_id = %s AND phase = 'done'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (str(guild_id),),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+        return self._run(query)
+
+    def list_past_partners(self, guild_id: str, user_id: str) -> list[dict[str, str]]:
+        def query(cur):
+            cur.execute(
+                """
+                SELECT
+                    CASE WHEN p.giver_id = %s THEN p.receiver_id ELSE p.giver_id END AS other_id,
+                    part.name AS name,
+                    e.id AS event_id
+                FROM pairings p
+                JOIN events e ON e.id = p.event_id
+                LEFT JOIN participants part
+                  ON part.event_id = e.id
+                 AND part.user_id = CASE WHEN p.giver_id = %s THEN p.receiver_id ELSE p.giver_id END
+                WHERE e.guild_id = %s
+                  AND e.phase = 'done'
+                  AND %s IN (p.giver_id, p.receiver_id)
+                ORDER BY e.id DESC
+                """,
+                (str(user_id), str(user_id), str(guild_id), str(user_id)),
+            )
+            found: dict[str, str] = {}
+            for row in cur.fetchall():
+                other = str(row["other_id"] or "")
+                if not other or other == str(user_id) or other in found:
+                    continue
+                found[other] = row["name"] or "Someone"
+                if len(found) == 25:
+                    break
+            return [{"user_id": other, "name": name} for other, name in found.items()]
+
+        return self._run(query)
+
     def list_exclusions(self, event_id: int) -> set[tuple[str, str]]:
         def query(cur):
             cur.execute(
@@ -581,6 +631,8 @@ class DatabaseManager:
             self._migrate_v5(cur)
         if self._schema_version(cur) < 6:
             self._migrate_v6(cur)
+        if self._schema_version(cur) < 7:
+            self._migrate_v7(cur)
         return legacy_count
 
     def _migrate_v1(self, cur) -> int | None:
@@ -611,6 +663,7 @@ class DatabaseManager:
                 shipping_lead_days INTEGER NOT NULL DEFAULT 3,
                 spending_cap TEXT,
                 rules TEXT,
+                signup_deadline DATE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT events_phase_check CHECK (phase IN ('signup', 'locked', 'drawn', 'done'))
             )
@@ -773,6 +826,11 @@ class DatabaseManager:
                 """
             )
         cur.execute("INSERT INTO schema_migrations (version) VALUES (6)")
+
+    def _migrate_v7(self, cur) -> None:
+        if self._table_exists(cur, "events"):
+            cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS signup_deadline DATE")
+        cur.execute("INSERT INTO schema_migrations (version) VALUES (7)")
 
     def _schema_version(self, cur) -> int:
         cur.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")

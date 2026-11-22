@@ -32,6 +32,7 @@ from present import (
     shipping_reminder_card,
     status_card,
     to_embed,
+    waiting_card,
     wishlist_update_card,
     welcome_card,
 )
@@ -65,6 +66,13 @@ class _Memory:
 
     def add_participant(self, event_id, user_id, name):
         self.participants[event_id][user_id] = {"user_id": user_id, "name": name}
+
+    def list_actionable_events(self):
+        return [event for event in self.events.values() if event["phase"] != "done"]
+
+    def list_past_partners(self, guild_id, user_id):
+        del guild_id, user_id
+        return []
 
 
 def test_welcome_explains_the_event_and_neutralizes_mentions():
@@ -140,6 +148,7 @@ def test_command_descriptions_fit_slash_limits():
     assert {"problem", "idea", "news", "tutorial", "setbudget", "notes", "reports", "block", "cap", "rules"} <= set(
         commands_by_name
     )
+    assert {"signupby", "carrylocks", "waiting"} <= set(commands_by_name)
     assert "include" in commands_by_name["unexclude"].aliases
     assert not any("guild_only" in getattr(check, "__qualname__", "") for check in commands_by_name["status"].checks)
 
@@ -172,6 +181,30 @@ def test_profile_match_and_status_keep_private_text_in_the_right_card():
     assert "$10" in own.text()
     assert "for this event" not in own.text()
     assert "Rules for this event" in welcome_card("Ada", "Party", "Handmade only").text()
+    history = welcome_card("Ada", "Party", "", [{"user_id": "22", "name": "Bea"}])
+    assert "Past matches in this server" in history.text()
+    assert "Bea" in history.text()
+    assert "skip again" in history.text()
+    quiet = waiting_card([])
+    assert "Everyone has marked" in quiet.text()
+    pending = waiting_card([{"name": "Ada", "gift_status": "not_bought"}])
+    assert "Ada — not bought" in pending.text()
+    assert "Bea" not in pending.text()
+    assert "match is not listed" in pending.footer
+    dated = status_card(
+        {
+            "name": "Party",
+            "phase": "signup",
+            "deadline": "2026-12-20",
+            "signup_deadline": "2026-12-01",
+            "count": 1,
+            "missing_wishlist": [],
+            "missing_address": [],
+            "gift_counts": None,
+        }
+    )
+    assert "Last day to join: 2026-12-01" in dated.text()
+    assert "Gift deadline: 2026-12-20" in dated.text()
     assert "shirt" not in profile.text().lower()
     match = match_card({"name": "@here", "wishlist": "books", "digital_only": True})
     assert "@here" not in match.text()
@@ -258,11 +291,11 @@ def test_roster_reminders_notes_and_reveal_layout():
     assert "GIF" in hint.text()
     assert "shows once" in hint.footer
     news = changelog_card()
-    assert CHANGELOG_VERSION == 3
+    assert CHANGELOG_VERSION == 4
     assert "What's new" in news.title
-    assert "s!block" in news.text()
-    assert "s!cap" in news.text()
-    assert "s!rules" in news.text()
+    assert "s!waiting" in news.text()
+    assert "s!signupby" in news.text()
+    assert "skip" in news.text().lower()
     copied = notes_card([("To the person you're buying for", "hello @Ada", "https://cdn.example/a.gif")])
     assert "@Ada" not in copied.text()
     assert "hello" in copied.text()

@@ -37,7 +37,7 @@ from services import (
     resolve_dm_events,
 )
 from utils import log_event, report_failure
-from views import NotificationSettingsView, ProfileView, ReplyView, TutorialView
+from views import NotificationSettingsView, PastPartnerView, ProfileView, ReplyView, TutorialView
 
 
 class RateLimited(commands.CommandError):
@@ -158,6 +158,7 @@ class SecretSantaCog(commands.Cog):
     async def daily_reminders(self):
         """Check once a day. Each event sends only on the organizer's interval."""
         today = date.today()
+        await self.run(self.service.close_expired_signups, today)
         targets = await self.run(self.service.select_reminders, today)
         marked: set[tuple[int, str]] = set()
         for target in targets:
@@ -197,7 +198,11 @@ class SecretSantaCog(commands.Cog):
         """Join the open Secret Santa and get a DM that explains it."""
         result = await self.run(self.service.join, str(ctx.guild.id), str(ctx.author.id), ctx.author.display_name)
         welcome = (result.data or {}).get("welcome") if result.ok else None
-        delivered = await self._dm_card(str(ctx.author.id), welcome) if welcome is not None else False
+        partners = (result.data or {}).get("past_partners") or []
+        history = (
+            PastPartnerView(self, str(ctx.guild.id), str(ctx.author.id), partners) if welcome is not None and partners else None
+        )
+        delivered = await self._dm_card(str(ctx.author.id), welcome, view=history) if welcome is not None else False
         if result.ok:
             log_event("JOIN", f"guild {ctx.guild.id} user {ctx.author.id}")
         if welcome is not None and delivered:
@@ -206,7 +211,7 @@ class SecretSantaCog(commands.Cog):
             await _show(ctx, result)
         if welcome is not None and not delivered:
             await _say(ctx, "I couldn't DM the welcome note, so here it is.")
-            await _send_card(ctx, welcome)
+            await _send_card(ctx, welcome, view=history)
 
     @commands.hybrid_command(name="leave", help="Leave the Secret Santa")
     @commands.guild_only()
@@ -235,6 +240,19 @@ class SecretSantaCog(commands.Cog):
         """Set the gift deadline as YYYY-MM-DD."""
         result = await self.run(
             self.service.set_deadline,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+            day,
+        )
+        await _show(ctx, result)
+
+    @commands.hybrid_command(name="signupby", help="Set the last day to join, or clear it")
+    @commands.guild_only()
+    async def signupby(self, ctx, *, day: str = ""):
+        """Set the last day to join, or clear it."""
+        result = await self.run(
+            self.service.set_signup_deadline,
             str(ctx.guild.id),
             str(ctx.author.id),
             _is_admin(ctx),
@@ -286,6 +304,21 @@ class SecretSantaCog(commands.Cog):
             return
         result = await self.run(self.service.status, event["guild_id"])
         await _show(ctx, result)
+
+    @commands.hybrid_command(name="waiting", help="DM who has not shipped, without the match")
+    @commands.guild_only()
+    async def waiting(self, ctx):
+        """DM who has not shipped, without the match."""
+        result = await self.run(
+            self.service.unshipped,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+        )
+        if not result.ok or result.card is None:
+            await _show(ctx, result)
+            return
+        await self._private(ctx, result.message, card=result.card)
 
     @commands.hybrid_command(name="participants", help="List participants")
     @commands.guild_only()
@@ -349,6 +382,18 @@ class SecretSantaCog(commands.Cog):
             second.display_name,
         )
         await self._after_roster_change(ctx, result, "BLOCK")
+
+    @commands.hybrid_command(name="carrylocks", help="Copy organizer locks from the last event")
+    @commands.guild_only()
+    async def carrylocks(self, ctx):
+        """Copy organizer locks from the last event."""
+        result = await self.run(
+            self.service.carry_locks,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+        )
+        await self._after_roster_change(ctx, result, "CARRY")
 
     @commands.hybrid_command(name="unblock", help="Remove an organizer lock between two people")
     @commands.guild_only()
@@ -859,12 +904,18 @@ class SecretSantaCog(commands.Cog):
     async def _dm_assignment(self, note: dict) -> bool:
         return await self._dm_card(note["giver_id"], _match_card(note), reply_as="giftee")
 
-    async def _dm_card(self, user_id: str, card: Card, reply_as: str | None = None) -> bool:
+    async def _dm_card(
+        self,
+        user_id: str,
+        card: Card,
+        reply_as: str | None = None,
+        view=None,
+    ) -> bool:
         user = await self._user(user_id)
         if user is None:
             return False
         try:
-            await _send_card(user, card, reply_as=reply_as)
+            await _send_card(user, card, reply_as=reply_as, view=view)
             return True
         except discord.Forbidden:
             return False

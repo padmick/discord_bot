@@ -25,6 +25,7 @@ from present import (
     roster_card,
     settings_card,
     status_card,
+    waiting_card,
     welcome_card,
 )
 
@@ -110,21 +111,28 @@ class EventService:
                 "This server already has a Secret Santa event. Finish or cancel it before creating another.",
             )
         event = self.db.create_event(guild_id, cleaned, organizer_id)
-        return success(
-            f"**Created {label(cleaned, 'Secret Santa')}.** The organizer is not in the draw until they join.",
-            event_id=event["id"],
-        )
+        message = f"**Created {label(cleaned, 'Secret Santa')}.** The organizer is not in the draw until they join."
+        locks = self._finished_locks(guild_id)
+        if locks:
+            message += (
+                f"\nLast time these pairs were locked: {_lock_phrase(locks)}. "
+                "`s!carrylocks` keeps them. `s!unblock` drops one after that."
+            )
+        return success(message, event_id=event["id"], carried_locks=locks)
 
     def join(self, guild_id: str, user_id: str, name: str) -> Result:
+        self.close_expired_signups(date.today())
         event = self._open(guild_id)
         if isinstance(event, Result):
             return event
         if event["phase"] != SIGNUP:
             return failure("closed", "Joining is closed for this event.")
         self.db.add_participant(event["id"], str(user_id), name)
+        partners = self.db.list_past_partners(str(guild_id), str(user_id))
         return success(
             f"**{label(name, 'Someone')}** joined **{label(event['name'], 'Secret Santa')}**.",
-            welcome=welcome_card(name, event["name"], event.get("rules") or ""),
+            welcome=welcome_card(name, event["name"], event.get("rules") or "", partners),
+            past_partners=partners,
         )
 
     def leave(self, guild_id: str, user_id: str) -> Result:
@@ -154,6 +162,12 @@ class EventService:
             return event
         if event["phase"] != LOCKED:
             return failure("bad_phase", "Only a locked signup can be unlocked.")
+        signup_by = event.get("signup_deadline")
+        if signup_by and date.today() > signup_by:
+            return failure(
+                "signup_closed",
+                "That signup date has passed. Set a later day with s!signupby, or clear it.",
+            )
         self.db.update_event(event["id"], phase=SIGNUP)
         return success("**Signup is open again.**")
 
@@ -161,12 +175,90 @@ class EventService:
         event = self._managed(guild_id, actor_id, is_admin)
         if isinstance(event, Result):
             return event
-        try:
-            parsed = datetime.strptime(day.strip(), "%Y-%m-%d").date()
-        except (TypeError, ValueError):
+        parsed = _parse_day(day)
+        if parsed is None:
             return failure("bad_date", "Use a deadline like 2026-12-20.")
         self.db.update_event(event["id"], deadline=parsed)
-        return success(f"**Deadline set to {parsed.isoformat()}.**")
+        return success(f"**Gift deadline set to {parsed.isoformat()}.**")
+
+    def set_signup_deadline(self, guild_id: str, actor_id: str, is_admin: bool, day: str) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        text = (day or "").strip()
+        if not text:
+            current = event.get("signup_deadline")
+            shown = current.isoformat() if current else "not set"
+            gift = event["deadline"].isoformat() if event.get("deadline") else "not set"
+            return success(f"**Last day to join is {shown}.** The gift deadline is {gift}.")
+        if text.lower() == "clear":
+            self.db.update_event(event["id"], signup_deadline=None)
+            extra = " Signup stays closed until you run s!unlock." if event["phase"] == LOCKED else ""
+            return success("**The signup date is cleared.**" + extra)
+        parsed = _parse_day(text)
+        if parsed is None:
+            return failure("bad_date", "Use a date like 2026-12-01.")
+        self.db.update_event(event["id"], signup_deadline=parsed)
+        if event["phase"] == SIGNUP and date.today() > parsed:
+            self.db.update_event(event["id"], phase=LOCKED)
+            return success(f"**Last day to join was {parsed.isoformat()}.** Signup is now closed.")
+        return success(
+            f"**Last day to join is {parsed.isoformat()}.** "
+            "People can join through that day. The gift deadline is separate."
+        )
+
+    def close_expired_signups(self, today: date) -> int:
+        closed = 0
+        for event in self.db.list_actionable_events():
+            signup_by = event.get("signup_deadline")
+            if event["phase"] == SIGNUP and signup_by and today > signup_by:
+                self.db.update_event(event["id"], phase=LOCKED)
+                closed += 1
+        return closed
+
+    def carry_locks(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        if event["phase"] == DONE:
+            return failure("bad_phase", "This event is already finished.")
+        locks = self._finished_locks(str(guild_id))
+        if not locks:
+            return success("**The last finished event had no organizer locks.**")
+        pair_ids = [(left, right) for left, right, _name_left, _name_right in locks]
+        applied = self._apply_locked_pairs(event, pair_ids)
+        if isinstance(applied, Result):
+            return applied
+        changed, redrawn = applied
+        names = _lock_phrase(locks)
+        message = f"**Carried {names}.** They cannot remove these. `s!unblock` drops one."
+        if event["phase"] == DRAWN and redrawn:
+            message += " Changed matches were sent by DM."
+        elif event["phase"] == DRAWN:
+            message += " Names are already out, so this applies if the matches are drawn again."
+        return success(message, changed=changed)
+
+    def unshipped(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        if event["phase"] != DRAWN:
+            return failure("bad_phase", "Gift progress is available after the draw.")
+        profiles = {person["user_id"]: person for person in self.db.list_participants(event["id"])}
+        waiting = []
+        for pairing in self.db.list_pairings(event["id"]):
+            if pairing["gift_status"] in {"shipped", "received"}:
+                continue
+            giver = profiles.get(pairing["giver_id"], {})
+            waiting.append(
+                {
+                    "user_id": pairing["giver_id"],
+                    "name": giver.get("name") or "Someone",
+                    "gift_status": pairing["gift_status"],
+                }
+            )
+        card = waiting_card(waiting)
+        return success(card.text(), card=card, waiting=waiting)
 
     def start(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
         event = self._managed(guild_id, actor_id, is_admin)
@@ -237,6 +329,7 @@ class EventService:
             "name": event["name"],
             "phase": event["phase"],
             "deadline": event["deadline"].isoformat() if event["deadline"] else None,
+            "signup_deadline": event["signup_deadline"].isoformat() if event.get("signup_deadline") else None,
             "count": len(participants),
             "missing_wishlist": missing_wishlist,
             "missing_address": missing_address,
@@ -871,6 +964,48 @@ class EventService:
         else:
             raise ValueError(f"Unknown reminder kind: {kind}")
 
+    def _finished_locks(self, guild_id: str) -> list[tuple[str, str, str, str]]:
+        finished = self.db.latest_finished_event(str(guild_id))
+        if not finished:
+            return []
+        names = {person["user_id"]: person.get("name") or "" for person in self.db.list_participants(finished["id"])}
+        return [
+            (left, right, names.get(left, ""), names.get(right, ""))
+            for left, right in self.db.list_locked_pairs(finished["id"])
+            if left and right and left != right
+        ]
+
+    def _apply_locked_pairs(self, event: dict[str, Any], pair_ids: list[tuple[str, str]]) -> Result | tuple:
+        proposed = set(self.db.list_exclusions(event["id"]))
+        for left, right in pair_ids:
+            proposed.add((str(left), str(right)))
+            proposed.add((str(right), str(left)))
+        changed: list[dict[str, Any]] = []
+        redrawn = False
+        if event["phase"] == DRAWN:
+            current_rows = {row["giver_id"]: row for row in self.db.list_pairings(event["id"])}
+            mapping = {giver: row["receiver_id"] for giver, row in current_rows.items()}
+            if mapping and not is_derangement(mapping, list(mapping), proposed):
+                updated = reroll_for_exclusions(mapping, proposed, self.rng)
+                if updated is None:
+                    return failure(
+                        "no_draw",
+                        "Those locks cannot be applied without breaking the draw, so nothing changed.",
+                    )
+                for left, right in pair_ids:
+                    self.db.add_exclusion_pair(event["id"], left, right, locked=True)
+                self._save_mapping(event["id"], updated, previous=current_rows)
+                profiles = {person["user_id"]: person for person in self.db.list_participants(event["id"])}
+                changed = [
+                    self._notification(giver, receiver, profiles, event)
+                    for giver, receiver in updated.items()
+                    if current_rows.get(giver, {}).get("receiver_id") != receiver
+                ]
+                return changed, True
+        for left, right in pair_ids:
+            self.db.add_exclusion_pair(event["id"], left, right, locked=True)
+        return changed, redrawn
+
     def _drop(self, guild_id: str, user_id: str, acting_on_self: bool) -> Result:
         event = self._open(guild_id)
         if isinstance(event, Result):
@@ -1006,6 +1141,20 @@ def _note_title(user_id: str, sender_id: str, recipient_id: str, giftee_id: str,
 
 def match_text(receiver: dict[str, Any]) -> str:
     return match_card(receiver).text()
+
+
+def _parse_day(day: str) -> date | None:
+    try:
+        return datetime.strptime(day.strip(), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _lock_phrase(locks: list[tuple[str, str, str, str]]) -> str:
+    return "; ".join(
+        f"{label(left_name, 'Someone')} and {label(right_name, 'Someone')}"
+        for _left, _right, left_name, right_name in locks
+    )
 
 
 def shipping_reminder_due(deadline: date, today: date, lead_days: int) -> bool:
