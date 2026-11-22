@@ -7,6 +7,7 @@ from present import (
     announcement_card,
     anonymous_card,
     Card,
+    CHANGELOG_VERSION,
     changelog_card,
     image_url,
     note_content,
@@ -20,11 +21,14 @@ from present import (
     tutorial_page_from_footer,
     info_card,
     match_card,
+    notes_card,
     profile_card,
+    reports_card,
     profile_reminder_card,
     reveal_card,
     reveal_cards,
     roster_card,
+    shipped_card,
     shipping_reminder_card,
     status_card,
     to_embed,
@@ -133,7 +137,7 @@ def test_command_descriptions_fit_slash_limits():
     helper = CustomHelpCommand()
     assert helper.command_attrs["help"] == "Show commands grouped by what you are doing"
     commands_by_name = {command.name: command for command in SecretSantaCog.__cog_commands__}
-    assert {"problem", "idea", "news", "tutorial"} <= set(commands_by_name)
+    assert {"problem", "idea", "news", "tutorial", "setbudget", "notes", "reports"} <= set(commands_by_name)
     assert "include" in commands_by_name["unexclude"].aliases
     assert not any("guild_only" in getattr(check, "__qualname__", "") for check in commands_by_name["status"].checks)
 
@@ -149,6 +153,7 @@ def test_profile_match_and_status_keep_private_text_in_the_right_card():
         }
     )
     assert "99 Private Road" in profile.text()
+    assert "Spending limit" in profile.text()
     assert "shirt" not in profile.text().lower()
     match = match_card({"name": "@here", "wishlist": "books", "digital_only": True})
     assert "@here" not in match.text()
@@ -235,9 +240,19 @@ def test_roster_reminders_notes_and_reveal_layout():
     assert "GIF" in hint.text()
     assert "shows once" in hint.footer
     news = changelog_card()
+    assert CHANGELOG_VERSION == 2
     assert "What's new" in news.title
-    assert "/problem" in news.text()
-    assert "/idea" in news.text()
+    assert "s!setbudget" in news.text()
+    assert "s!notes" in news.text()
+    assert "s!reports" in news.text()
+    copied = notes_card([("To the person you're buying for", "hello @Ada", "https://cdn.example/a.gif")])
+    assert "@Ada" not in copied.text()
+    assert "hello" in copied.text()
+    assert copied.image.endswith("a.gif")
+    reports = reports_card([{"kind": "problem", "user_id": "42", "body": "the button failed"}])
+    assert "<@42>" in reports.text()
+    assert "https://track.example/1" in shipped_card("https://track.example/1").text()
+    assert "No tracking link" in shipped_card("").text()
     draw = reveal_card([{"giver_name": "Ada", "receiver_name": "Bea"}])
     assert "Ada -> Bea" in draw.text()
     assert "not posted in the server" in draw.footer

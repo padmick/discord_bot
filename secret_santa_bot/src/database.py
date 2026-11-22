@@ -22,7 +22,7 @@ def _qualified(columns: str, table: str) -> str:
 
 
 PARTICIPANT_FIELDS = (
-    "event_id, user_id, name, wishlist, address, do_not_gift, notes, digital_only"
+    "event_id, user_id, name, wishlist, address, do_not_gift, notes, digital_only, budget"
 )
 PROFILE_FIELDS = {
     "name",
@@ -31,6 +31,7 @@ PROFILE_FIELDS = {
     "do_not_gift",
     "notes",
     "digital_only",
+    "budget",
 }
 EVENT_UPDATE_FIELDS = {
     "phase",
@@ -121,6 +122,23 @@ class DatabaseManager:
 
         return self._run(query)
 
+    def get_latest_event(self, guild_id: str) -> dict[str, Any] | None:
+        def query(cur):
+            cur.execute(
+                f"""
+                SELECT {EVENT_FIELDS}
+                FROM events
+                WHERE guild_id = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (str(guild_id),),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+        return self._run(query)
+
     def list_actionable_events(self) -> list[dict[str, Any]]:
         def query(cur):
             cur.execute(
@@ -157,6 +175,22 @@ class DatabaseManager:
             )
 
         self._run(query)
+
+    def list_feedback(self, guild_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        def query(cur):
+            cur.execute(
+                """
+                SELECT user_id, kind, body
+                FROM feedback
+                WHERE guild_id = %s
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (str(guild_id), int(limit)),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+        return self._run(query)
 
     def claim_changelog(self, user_id: str, version: int) -> bool:
         def query(cur):
@@ -288,6 +322,13 @@ class DatabaseManager:
                 (event_id, str(user_id), str(user_id)),
             )
             cur.execute(
+                """
+                DELETE FROM anonymous_notes
+                WHERE event_id = %s AND (sender_id = %s OR recipient_id = %s)
+                """,
+                (event_id, str(user_id), str(user_id)),
+            )
+            cur.execute(
                 "DELETE FROM participants WHERE event_id = %s AND user_id = %s",
                 (event_id, str(user_id)),
             )
@@ -344,14 +385,27 @@ class DatabaseManager:
         rows = list(pairs)
 
         def query(cur):
+            cur.execute(
+                """
+                SELECT giver_id, receiver_id, tracking_url
+                FROM pairings
+                WHERE event_id = %s
+                """,
+                (event_id,),
+            )
+            kept = {
+                (row["giver_id"], row["receiver_id"]): row["tracking_url"] or ""
+                for row in cur.fetchall()
+            }
             cur.execute("DELETE FROM pairings WHERE event_id = %s", (event_id,))
             for giver_id, receiver_id, gift_status in rows:
+                pair = (str(giver_id), str(receiver_id))
                 cur.execute(
                     """
-                    INSERT INTO pairings (event_id, giver_id, receiver_id, gift_status)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO pairings (event_id, giver_id, receiver_id, gift_status, tracking_url)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (event_id, str(giver_id), str(receiver_id), gift_status),
+                    (event_id, pair[0], pair[1], gift_status, kept.get(pair, "")),
                 )
 
         self._run(query)
@@ -360,7 +414,7 @@ class DatabaseManager:
         def query(cur):
             cur.execute(
                 """
-                SELECT giver_id, receiver_id, gift_status
+                SELECT giver_id, receiver_id, gift_status, tracking_url
                 FROM pairings
                 WHERE event_id = %s
                 ORDER BY id
@@ -371,17 +425,71 @@ class DatabaseManager:
 
         return self._run(query)
 
-    def set_gift_status(self, event_id: int, giver_id: str, status: str) -> int:
+    def set_gift_status(
+        self,
+        event_id: int,
+        giver_id: str,
+        status: str,
+        tracking_url: str | None = None,
+    ) -> int:
+        def query(cur):
+            if tracking_url is None:
+                cur.execute(
+                    """
+                    UPDATE pairings
+                    SET gift_status = %s
+                    WHERE event_id = %s AND giver_id = %s
+                    """,
+                    (status, event_id, str(giver_id)),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE pairings
+                    SET gift_status = %s, tracking_url = %s
+                    WHERE event_id = %s AND giver_id = %s
+                    """,
+                    (status, tracking_url, event_id, str(giver_id)),
+                )
+            return cur.rowcount
+
+        return self._run(query)
+
+    def save_note(
+        self,
+        event_id: int,
+        sender_id: str,
+        recipient_id: str,
+        body: str,
+        image_url: str = "",
+    ) -> None:
         def query(cur):
             cur.execute(
                 """
-                UPDATE pairings
-                SET gift_status = %s
-                WHERE event_id = %s AND giver_id = %s
+                INSERT INTO anonymous_notes (event_id, sender_id, recipient_id, body, image_url)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (event_id, sender_id, recipient_id) DO UPDATE
+                SET body = EXCLUDED.body,
+                    image_url = EXCLUDED.image_url,
+                    created_at = NOW()
                 """,
-                (status, event_id, str(giver_id)),
+                (event_id, str(sender_id), str(recipient_id), body, image_url or ""),
             )
-            return cur.rowcount
+
+        self._run(query)
+
+    def list_notes(self, event_id: int, user_id: str) -> list[dict[str, Any]]:
+        def query(cur):
+            cur.execute(
+                """
+                SELECT sender_id, recipient_id, body, image_url
+                FROM anonymous_notes
+                WHERE event_id = %s AND (sender_id = %s OR recipient_id = %s)
+                ORDER BY created_at DESC
+                """,
+                (event_id, str(user_id), str(user_id)),
+            )
+            return [dict(row) for row in cur.fetchall()]
 
         return self._run(query)
 
@@ -427,6 +535,8 @@ class DatabaseManager:
             self._migrate_v3(cur)
         if self._schema_version(cur) < 4:
             self._migrate_v4(cur)
+        if self._schema_version(cur) < 5:
+            self._migrate_v5(cur)
         return legacy_count
 
     def _migrate_v1(self, cur) -> int | None:
@@ -479,6 +589,7 @@ class DatabaseManager:
                 do_not_gift TEXT,
                 notes TEXT,
                 digital_only BOOLEAN NOT NULL DEFAULT FALSE,
+                budget TEXT,
                 UNIQUE (event_id, user_id)
             )
             """
@@ -501,6 +612,7 @@ class DatabaseManager:
                 giver_id TEXT NOT NULL,
                 receiver_id TEXT NOT NULL,
                 gift_status TEXT NOT NULL DEFAULT 'not_bought',
+                tracking_url TEXT NOT NULL DEFAULT '',
                 UNIQUE (event_id, giver_id),
                 UNIQUE (event_id, receiver_id),
                 CONSTRAINT pairings_status_check CHECK (
@@ -576,6 +688,31 @@ class DatabaseManager:
             """
         )
         cur.execute("INSERT INTO schema_migrations (version) VALUES (4)")
+
+    def _migrate_v5(self, cur) -> None:
+        if self._table_exists(cur, "participants"):
+            cur.execute("ALTER TABLE participants ADD COLUMN IF NOT EXISTS budget TEXT")
+        if self._table_exists(cur, "pairings"):
+            cur.execute(
+                """
+                ALTER TABLE pairings
+                ADD COLUMN IF NOT EXISTS tracking_url TEXT NOT NULL DEFAULT ''
+                """
+            )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS anonymous_notes (
+                event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                sender_id TEXT NOT NULL,
+                recipient_id TEXT NOT NULL,
+                body TEXT NOT NULL DEFAULT '',
+                image_url TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (event_id, sender_id, recipient_id)
+            )
+            """
+        )
+        cur.execute("INSERT INTO schema_migrations (version) VALUES (5)")
 
     def _schema_version(self, cur) -> int:
         cur.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")

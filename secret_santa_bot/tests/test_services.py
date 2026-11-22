@@ -23,6 +23,7 @@ class FakeDB:
         self.exclusions = set()
         self.pairings = {}
         self.feedback = []
+        self.notes = {}
         self.seen_changelog = {}
         self.seen_tips = set()
         self.next_id = 1
@@ -59,6 +60,12 @@ class FakeDB:
                 return dict(event)
         return None
 
+    def get_latest_event(self, guild_id):
+        found = [event for event in self.events.values() if event["guild_id"] == str(guild_id)]
+        if not found:
+            return None
+        return dict(max(found, key=lambda event: event["id"]))
+
     def list_actionable_events(self):
         return [dict(event) for event in self.events.values() if event["phase"] != "done"]
 
@@ -72,6 +79,7 @@ class FakeDB:
             del self.participants[key]
         self.exclusions = {item for item in self.exclusions if item[0] != event_id}
         self.pairings.pop(event_id, None)
+        self.notes = {key: note for key, note in self.notes.items() if key[0] != event_id}
 
     def add_participant(self, event_id, user_id, name):
         key = (event_id, str(user_id))
@@ -86,6 +94,7 @@ class FakeDB:
                 "address": None,
                 "do_not_gift": None,
                 "notes": None,
+                "budget": None,
                 "digital_only": False,
             }
             self.participant_order.append(key)
@@ -130,6 +139,11 @@ class FakeDB:
             for row in self.pairings.get(event_id, [])
             if row["giver_id"] != user_id and row["receiver_id"] != user_id
         ]
+        self.notes = {
+            key: note
+            for key, note in self.notes.items()
+            if not (key[0] == event_id and (key[1] == user_id or key[2] == user_id))
+        }
         return True
 
     def add_exclusion_pair(self, event_id, user_id, other_id):
@@ -147,26 +161,57 @@ class FakeDB:
 
     def replace_pairings(self, event_id, pairs):
         self.replace_calls += 1
+        previous = {
+            (row["giver_id"], row["receiver_id"]): row.get("tracking_url") or ""
+            for row in self.pairings.get(event_id, [])
+        }
         self.pairings[event_id] = [
-            {"giver_id": str(giver), "receiver_id": str(receiver), "gift_status": status}
+            {
+                "giver_id": str(giver),
+                "receiver_id": str(receiver),
+                "gift_status": status,
+                "tracking_url": previous.get((str(giver), str(receiver)), ""),
+            }
             for giver, receiver, status in pairs
         ]
 
     def list_pairings(self, event_id):
         return [dict(row) for row in self.pairings.get(event_id, [])]
 
-    def set_gift_status(self, event_id, giver_id, status):
+    def set_gift_status(self, event_id, giver_id, status, tracking_url=None):
         updated = 0
         for row in self.pairings.get(event_id, []):
             if row["giver_id"] == str(giver_id):
                 row["gift_status"] = status
+                if tracking_url is not None:
+                    row["tracking_url"] = tracking_url
                 updated += 1
         return updated
+
+    def save_note(self, event_id, sender_id, recipient_id, body, image_url=""):
+        self.notes[(event_id, str(sender_id), str(recipient_id))] = {
+            "sender_id": str(sender_id),
+            "recipient_id": str(recipient_id),
+            "body": body,
+            "image_url": image_url or "",
+        }
+
+    def list_notes(self, event_id, user_id):
+        user_id = str(user_id)
+        return [
+            dict(note)
+            for (stored_event, sender, recipient), note in self.notes.items()
+            if stored_event == event_id and user_id in {sender, recipient}
+        ]
 
     def add_feedback(self, guild_id, user_id, kind, body):
         self.feedback.append(
             {"guild_id": str(guild_id or ""), "user_id": str(user_id), "kind": kind, "body": body}
         )
+
+    def list_feedback(self, guild_id, limit=10):
+        rows = [row for row in self.feedback if row["guild_id"] == str(guild_id)]
+        return list(reversed(rows))[:limit]
 
     def claim_changelog(self, user_id, version):
         user_id = str(user_id)
@@ -376,7 +421,7 @@ def test_drawn_leave_rerolls_and_preserves_untouched_gift_status():
     database.pairings[event_id] = [
         {"giver_id": "a", "receiver_id": "b", "gift_status": "shipped"},
         {"giver_id": "b", "receiver_id": "c", "gift_status": "not_bought"},
-        {"giver_id": "c", "receiver_id": "d", "gift_status": "bought"},
+        {"giver_id": "c", "receiver_id": "d", "gift_status": "bought", "tracking_url": "https://track.example/c"},
         {"giver_id": "d", "receiver_id": "a", "gift_status": "not_bought"},
     ]
     result = svc.leave("guild", "b")
@@ -387,6 +432,8 @@ def test_drawn_leave_rerolls_and_preserves_untouched_gift_status():
     assert rows["a"]["gift_status"] == "not_bought"
     assert rows["c"]["receiver_id"] == "d"
     assert rows["c"]["gift_status"] == "bought"
+    assert rows["c"]["tracking_url"] == "https://track.example/c"
+    assert rows["a"]["tracking_url"] == ""
     assert rows["d"]["receiver_id"] == "a"
     assert {note["giver_id"] for note in result.data["changed"]} == {"a"}
     assert database.get_participant(event_id, "b") is None
@@ -607,6 +654,122 @@ async def test_notification_form_saves_the_organizer_choices():
     await modal.on_submit(rejected)
     assert database.get_open_event("guild")["profile_reminders"] is False
     assert "organizer" in rejected.followup.messages[0].lower()
+
+
+def test_budget_notes_tracking_and_reports():
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    ready_participant(svc, "guild", "ada", "Ada")
+    ready_participant(svc, "guild", "bea", "Bea")
+    ready_participant(svc, "guild", "cara", "Cara")
+    saved = svc.set_text_field("guild", "ada", "budget", "  $20  ", True)
+    assert saved.ok
+    assert saved.data["delete_message"] is True
+    assert database.get_participant(database.get_open_event("guild")["id"], "ada")["budget"] == "$20"
+    assert svc.set_text_field("guild", "ada", "budget", "x" * 81, False).code == "too_long"
+    assert svc.start("guild", "org", False).ok
+    event_id = database.get_open_event("guild")["id"]
+    database.pairings[event_id] = [
+        {"giver_id": "ada", "receiver_id": "bea", "gift_status": "not_bought", "tracking_url": ""},
+        {"giver_id": "bea", "receiver_id": "cara", "gift_status": "not_bought", "tracking_url": ""},
+        {"giver_id": "cara", "receiver_id": "ada", "gift_status": "not_bought", "tracking_url": ""},
+    ]
+    match = svc.match_info("guild", "cara")
+    assert "Spending limit" in match.message
+    assert "$20" in match.message
+
+    assert svc.my_notes("guild", "ada").message == "**No anonymous notes yet.**"
+    prepared = svc.prepare_message("guild", "ada", "giftee", "hello there", "https://cdn.example/a.gif")
+    assert prepared.data["target_id"] == "bea"
+    svc.remember_note(event_id, "ada", prepared.data["target_id"], prepared.data["body"], prepared.data["image"])
+    svc.remember_note(event_id, "ada", "bea", "the new note", "")
+    svc.remember_note(event_id, "cara", "ada", "from your santa", "")
+    ada_notes = svc.my_notes("guild", "ada")
+    assert ada_notes.card.title == "Your latest notes"
+    assert "To the person you're buying for" in ada_notes.message
+    assert "the new note" in ada_notes.message
+    assert "hello there" not in ada_notes.message
+    assert "From the person buying your gift" in ada_notes.message
+    assert "from your santa" in ada_notes.message
+    assert "Bea" not in ada_notes.message
+    assert "Cara" not in ada_notes.message
+    bea_notes = svc.my_notes("guild", "bea")
+    assert "From the person buying your gift" in bea_notes.message
+    assert "the new note" in bea_notes.message
+
+    assert svc.set_gift_status("guild", "bea", "shipped", "https://track.example/1").code == "bad_transition"
+    assert svc.set_gift_status("guild", "bea", "bought").ok
+    rejected = svc.set_gift_status("guild", "bea", "shipped", "not a link")
+    assert rejected.code == "bad_link"
+    assert next(row["gift_status"] for row in database.list_pairings(event_id) if row["giver_id"] == "bea") == "bought"
+    shipped = svc.set_gift_status("guild", "bea", "shipped", "https://track.example/1")
+    assert shipped.ok
+    assert shipped.data["notify_receiver_id"] == "cara"
+    assert shipped.data["tracking_url"] == "https://track.example/1"
+    later = svc.set_gift_status("guild", "bea", "tracking", "https://track.example/2")
+    assert later.data["tracking_url"] == "https://track.example/2"
+    stored = next(row for row in database.list_pairings(event_id) if row["giver_id"] == "bea")
+    assert stored["gift_status"] == "shipped"
+    assert stored["tracking_url"] == "https://track.example/2"
+
+    assert svc.feedback_report("guild", "ada", False).code == "forbidden"
+    assert svc.submit_feedback("guild", "42", "problem", "the button failed").ok
+    assert svc.submit_feedback("other", "42", "feature", "stickers").ok
+    report = svc.feedback_report("guild", "org", False)
+    assert report.card.title == "Reports and ideas"
+    assert "<@42>" in report.message
+    assert "the button failed" in report.message
+    assert "stickers" not in report.message
+    assert svc.finish("guild", "org", False).ok
+    assert "the button failed" in svc.feedback_report("guild", "org", False).message
+
+
+async def test_profile_form_saves_a_spending_limit():
+    from views import ProfileModal
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    ready_participant(svc, "guild", "ada", "Ada")
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def notify_wishlist(self, payload):
+            del payload
+
+    class Response:
+        async def defer(self, ephemeral=False):
+            del ephemeral
+
+        async def send_message(self, message, ephemeral=False):
+            del message, ephemeral
+
+    class Followup:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message, ephemeral=False):
+            del ephemeral
+            self.messages.append(message)
+
+    info = svc.my_info("guild", "ada")
+    modal = ProfileModal(Cog(), "guild", "ada", info.data)
+    assert len(modal.children) == 5
+    assert modal.budget.label == "Spending limit"
+    modal.wishlist._value = "books for Ada"
+    modal.budget._value = "about 20"
+    modal.do_not_gift._value = ""
+    modal.notes._value = ""
+    modal.address._value = "99 Private Road"
+    saved = SimpleNamespace(user=SimpleNamespace(id="ada"), response=Response(), followup=Followup())
+    await modal.on_submit(saved)
+    event_id = database.get_open_event("guild")["id"]
+    assert database.get_participant(event_id, "ada")["budget"] == "about 20"
+    assert saved.followup.messages[0] == "**Profile saved.**"
 
 
 def test_a_past_match_can_be_skipped_before_they_join():

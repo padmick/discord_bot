@@ -112,10 +112,11 @@ class ProfileModal(discord.ui.Modal, title="Secret Santa profile"):
         self.guild_id = guild_id
         self.user_id = user_id
         self.wishlist = _field("Wishlist", profile.get("wishlist"), paragraph=True, limit=1000)
+        self.budget = _field("Spending limit", profile.get("budget"), limit=80)
         self.do_not_gift = _field("Do not gift", profile.get("do_not_gift"), limit=500)
         self.notes = _field("Notes", profile.get("notes"), paragraph=True, limit=500)
         self.address = _field("Address, blank if digital", profile.get("address"), paragraph=True, limit=1000)
-        for item in (self.wishlist, self.do_not_gift, self.notes, self.address):
+        for item in (self.wishlist, self.budget, self.do_not_gift, self.notes, self.address):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -129,6 +130,7 @@ class ProfileModal(discord.ui.Modal, title="Secret Santa profile"):
                 self.guild_id,
                 self.user_id,
                 wishlist=self.wishlist.value,
+                budget=self.budget.value,
                 do_not_gift=self.do_not_gift.value,
                 notes=self.notes.value,
                 address=self.address.value,
