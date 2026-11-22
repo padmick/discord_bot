@@ -2,7 +2,9 @@
 
 A Discord bot for one Secret Santa at a time in each server. It collects private wishlists and addresses, draws a derangement that respects exclusions, and lets pairs message each other without sharing names in the channel.
 
-Prefix commands use `s!`. A space after the mark is fine, and `S!` works the same, so `S! tutorial` and `s!tutorial` are the same command. The same actions are available as slash commands after the bot syncs them.
+Prefix commands use `s!`. A space after the mark is fine, and `S!` works the same, so `S! tutorial` and `s!tutorial` are the same command. Mentioning the bot works as that same prefix, so `@SecretSanta join` is `s!join`. The same actions are available as slash commands after the bot syncs them.
+
+Anything else after the mention is a joke, not a command. `@SecretSanta who's on your naughty list?` gets a short fictional reply. A bare `@SecretSanta` gets a canned line and does not call the model. The joke path does not look up events, matches, wishlists, or addresses. Real commands keep doing that.
 
 ## Features
 
@@ -17,6 +19,7 @@ Prefix commands use `s!`. A space after the mark is fine, and `S!` works the sam
 - Gift progress: bought, shipped, received. A tracking link can go with the shipped step and is DMed to the recipient
 - Reminder settings the organizer edits in a form. The bot checks once a day and sends after the chosen number of days, weekly by default.
 - A short welcome DM when someone joins, plus grouped help and an event guide
+- A public joke when someone @mentions the bot with anything that is not a real command. The reply is made up. It never reads the draw, wishlists, or addresses.
 
 ## Prerequisites
 
@@ -46,7 +49,12 @@ poetry install
 ```env
 DISCORD_TOKEN=your_discord_bot_token_here
 DATABASE_URL=postgresql://user:password@host:5432/secret_santa
+CLOUDFLARE_ACCOUNT_ID=your_cloudflare_account_id
+CLOUDFLARE_API_TOKEN=your_workers_ai_read_token
+EASTER_EGG_MODEL=@cf/ibm-granite/granite-4.0-h-micro
 ```
+
+`CLOUDFLARE_API_TOKEN` is a Workers AI Read token. Leave it unset and @mention jokes stay on the canned lines. `EASTER_EGG_MODEL` is optional. The default is `@cf/ibm-granite/granite-4.0-h-micro`. `@cf/google/gemma-4-26b-a4b-it` is the fuller joke if Granite is too thin. Do not point this at a deprecated model.
 
 ## Running the Bot
 
