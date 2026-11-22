@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-from matching import assign_derangement, reroll_after_removal
+from matching import assign_derangement, is_derangement, reroll_after_removal, reroll_for_exclusions
 from utils import log_event
 from present import (
     CHANGELOG_VERSION,
@@ -16,6 +16,8 @@ from present import (
     Card,
     format_help,
     label,
+    blocks_card,
+    event_setup_card,
     match_card,
     notes_card,
     profile_card,
@@ -122,7 +124,7 @@ class EventService:
         self.db.add_participant(event["id"], str(user_id), name)
         return success(
             f"**{label(name, 'Someone')}** joined **{label(event['name'], 'Secret Santa')}**.",
-            welcome=welcome_card(name, event["name"]),
+            welcome=welcome_card(name, event["name"], event.get("rules") or ""),
         )
 
     def leave(self, guild_id: str, user_id: str) -> Result:
@@ -191,14 +193,16 @@ class EventService:
         if mapping is None:
             return failure(
                 "no_draw",
-                "No valid draw exists with these past-match skips. Remove one and try again.",
+                "No valid draw exists with these skips and organizer locks. Remove one and try again.",
             )
         self._save_mapping(event["id"], mapping, previous={})
         self.db.update_event(event["id"], phase=DRAWN)
         profiles = {person["user_id"]: person for person in participants}
         return success(
             "**Secret Santa has begun.** Participants received their matches by DM.",
-            notifications=[self._notification(giver, receiver, profiles) for giver, receiver in mapping.items()],
+            notifications=[
+                self._notification(giver, receiver, profiles, event) for giver, receiver in mapping.items()
+            ],
         )
 
     def finish(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
@@ -298,10 +302,120 @@ class EventService:
         if user_id not in known:
             return failure("not_joined", "Join the Secret Santa first.")
         removed = self.db.remove_exclusion_pair(event["id"], user_id, str(other_id))
-        if not removed:
+        if removed == "locked":
+            return failure(
+                "locked",
+                "The organizer kept this pair apart. Ask them to remove the lock.",
+            )
+        if removed != "removed":
             return failure("missing_exclusion", "They aren't on your past-match list.")
         who = label(other_name, "They")
         return success(f"**{who}** can be paired with you again.")
+
+    def block_pair(
+        self,
+        guild_id: str,
+        actor_id: str,
+        is_admin: bool,
+        first_id: str,
+        first_name: str,
+        second_id: str,
+        second_name: str,
+    ) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        if event["phase"] == DONE:
+            return failure("bad_phase", "This event is already finished.")
+        first_id, second_id = str(first_id).strip(), str(second_id).strip()
+        if not first_id or not second_id or first_id == second_id:
+            return failure("bad_exclusion", "Pick two different people.")
+        names = f"{label(first_name, 'Someone')} and {label(second_name, 'Someone')}"
+        proposed = set(self.db.list_exclusions(event["id"]))
+        proposed.add((first_id, second_id))
+        proposed.add((second_id, first_id))
+        changed: list[dict[str, Any]] = []
+        if event["phase"] == DRAWN:
+            current_rows = {row["giver_id"]: row for row in self.db.list_pairings(event["id"])}
+            mapping = {giver: row["receiver_id"] for giver, row in current_rows.items()}
+            if mapping and not is_derangement(mapping, list(mapping), proposed):
+                redrawn = reroll_for_exclusions(mapping, proposed, self.rng)
+                if redrawn is None:
+                    return failure(
+                        "no_draw",
+                        f"{names} cannot be separated without breaking the draw, so nothing was locked.",
+                    )
+                self.db.add_exclusion_pair(event["id"], first_id, second_id, locked=True)
+                self._save_mapping(event["id"], redrawn, previous=current_rows)
+                profiles = {person["user_id"]: person for person in self.db.list_participants(event["id"])}
+                changed = [
+                    self._notification(giver, receiver, profiles, event)
+                    for giver, receiver in redrawn.items()
+                    if current_rows.get(giver, {}).get("receiver_id") != receiver
+                ]
+                return success(
+                    f"**{names}** will not be matched. They cannot remove this. Changed matches were sent by DM.",
+                    changed=changed,
+                )
+        self.db.add_exclusion_pair(event["id"], first_id, second_id, locked=True)
+        message = f"**{names}** will not be matched. They cannot remove this."
+        if event["phase"] == DRAWN:
+            message += " Names are already out, so this applies if the matches are drawn again."
+        else:
+            message += " They do not have to have joined yet."
+        return success(message, changed=changed)
+
+    def unblock_pair(
+        self,
+        guild_id: str,
+        actor_id: str,
+        is_admin: bool,
+        first_id: str,
+        second_id: str,
+        first_name: str = "",
+        second_name: str = "",
+    ) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        removed = self.db.remove_exclusion_pair(event["id"], str(first_id), str(second_id), include_locked=True)
+        if removed != "removed":
+            return failure("missing_exclusion", "Those two are not locked apart.")
+        names = f"{label(first_name, 'Someone')} and {label(second_name, 'Someone')}"
+        return success(
+            f"**{names}** can be matched again. A personal skip has to be added again if they still want one."
+        )
+
+    def locked_blocks(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        pairs = self.db.list_locked_pairs(event["id"])
+        if not pairs:
+            return success("**No organizer locks yet.**")
+        card = blocks_card(pairs)
+        return success(card.text(), card=card, pairs=pairs)
+
+    def set_event_copy(self, guild_id: str, actor_id: str, is_admin: bool, field: str, text: str) -> Result:
+        event = self._managed(guild_id, actor_id, is_admin)
+        if isinstance(event, Result):
+            return event
+        if field not in {"spending_cap", "rules"}:
+            return failure("bad_field", "That event note is not editable.")
+        if not str(text or "").strip():
+            card = event_setup_card(event.get("spending_cap") or "", event.get("rules") or "")
+            return success(card.text(), card=card)
+        cleaned = " ".join(str(text).split())
+        if cleaned.lower() == "clear":
+            cleaned = ""
+        limit = 80 if field == "spending_cap" else 500
+        if len(cleaned) > limit:
+            label_name = "spending cap" if field == "spending_cap" else "rules note"
+            return failure("too_long", f"Keep the {label_name} under {limit} characters.")
+        self.db.update_event(event["id"], **{field: cleaned or None})
+        updated = self.db.get_event(event["id"]) or event
+        card = event_setup_card(updated.get("spending_cap") or "", updated.get("rules") or "")
+        return success("**Event setup saved.**\n" + card.text(), card=card)
 
     def set_text_field(
         self,
@@ -376,6 +490,9 @@ class EventService:
         participant = self.db.get_participant(event["id"], str(user_id))
         if participant is None:
             return failure("not_joined", "You have not joined this Secret Santa.")
+        participant = dict(participant)
+        participant["spending_cap"] = event.get("spending_cap") or ""
+        participant["rules"] = event.get("rules") or ""
         card = profile_card(participant)
         return success(card.text(), card=card, **participant)
 
@@ -391,6 +508,9 @@ class EventService:
         receiver = self.db.get_participant(event["id"], pairing["receiver_id"])
         if receiver is None:
             return failure("no_match", "The match could not be loaded.")
+        receiver = dict(receiver)
+        receiver["spending_cap"] = event.get("spending_cap") or ""
+        receiver["rules"] = event.get("rules") or ""
         card = match_card(receiver)
         return success(card.text(), card=card, **receiver)
 
@@ -779,7 +899,7 @@ class EventService:
         self.db.delete_participant(event["id"], user_id)
         profiles = {person["user_id"]: person for person in self.db.list_participants(event["id"])}
         changed = [
-            self._notification(giver, receiver, profiles)
+            self._notification(giver, receiver, profiles, event)
             for giver, receiver in redrawn.items()
             if current.get(giver, {}).get("receiver_id") != receiver
         ]
@@ -794,8 +914,15 @@ class EventService:
             pairs.append((giver, receiver, status))
         self.db.replace_pairings(event_id, pairs)
 
-    def _notification(self, giver_id: str, receiver_id: str, profiles: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def _notification(
+        self,
+        giver_id: str,
+        receiver_id: str,
+        profiles: dict[str, dict[str, Any]],
+        event: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         receiver = profiles[receiver_id]
+        event = event or {}
         return {
             "giver_id": giver_id,
             "receiver_id": receiver_id,
@@ -805,6 +932,8 @@ class EventService:
             "do_not_gift": receiver.get("do_not_gift") or "",
             "notes": receiver.get("notes") or "",
             "budget": receiver.get("budget") or "",
+            "spending_cap": event.get("spending_cap") or "",
+            "rules": event.get("rules") or "",
             "digital_only": bool(receiver.get("digital_only")),
         }
 
@@ -919,6 +1048,8 @@ def assignment_text(note: dict[str, Any]) -> str:
         "do_not_gift": note.get("do_not_gift"),
         "notes": note.get("notes"),
         "budget": note.get("budget"),
+        "spending_cap": note.get("spending_cap"),
+        "rules": note.get("rules"),
         "digital_only": note.get("digital_only"),
     }
     return match_text(receiver)

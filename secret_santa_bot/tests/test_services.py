@@ -20,7 +20,7 @@ class FakeDB:
         self.events = {}
         self.participants = {}
         self.participant_order = []
-        self.exclusions = set()
+        self.exclusions = {}
         self.pairings = {}
         self.feedback = []
         self.notes = {}
@@ -47,6 +47,8 @@ class FakeDB:
             "shipping_reminders": True,
             "reminder_interval_days": 7,
             "shipping_lead_days": 3,
+            "spending_cap": None,
+            "rules": None,
         }
         return dict(self.events[event_id])
 
@@ -77,7 +79,7 @@ class FakeDB:
         self.participant_order = [key for key in self.participant_order if key[0] != event_id]
         for key in [key for key in self.participants if key[0] == event_id]:
             del self.participants[key]
-        self.exclusions = {item for item in self.exclusions if item[0] != event_id}
+        self.exclusions = {key: locked for key, locked in self.exclusions.items() if key[0] != event_id}
         self.pairings.pop(event_id, None)
         self.notes = {key: note for key, note in self.notes.items() if key[0] != event_id}
 
@@ -130,9 +132,9 @@ class FakeDB:
         del self.participants[key]
         self.participant_order = [item for item in self.participant_order if item != key]
         self.exclusions = {
-            item
-            for item in self.exclusions
-            if not (item[0] == event_id and (item[1] == user_id or item[2] == user_id))
+            key: locked
+            for key, locked in self.exclusions.items()
+            if not (key[0] == event_id and (key[1] == user_id or key[2] == user_id))
         }
         self.pairings[event_id] = [
             row
@@ -146,18 +148,40 @@ class FakeDB:
         }
         return True
 
-    def add_exclusion_pair(self, event_id, user_id, other_id):
-        self.exclusions.add((event_id, str(user_id), str(other_id)))
-        self.exclusions.add((event_id, str(other_id), str(user_id)))
+    def add_exclusion_pair(self, event_id, user_id, other_id, locked=False):
+        for left, right in ((str(user_id), str(other_id)), (str(other_id), str(user_id))):
+            key = (event_id, left, right)
+            self.exclusions[key] = bool(self.exclusions.get(key)) or bool(locked)
 
-    def remove_exclusion_pair(self, event_id, user_id, other_id):
-        before = len(self.exclusions)
-        self.exclusions.discard((event_id, str(user_id), str(other_id)))
-        self.exclusions.discard((event_id, str(other_id), str(user_id)))
-        return before - len(self.exclusions)
+    def remove_exclusion_pair(self, event_id, user_id, other_id, include_locked=False):
+        keys = [
+            (event_id, str(user_id), str(other_id)),
+            (event_id, str(other_id), str(user_id)),
+        ]
+        existing = [key for key in keys if key in self.exclusions]
+        if not existing:
+            return "missing"
+        if not include_locked and any(self.exclusions[key] for key in existing):
+            return "locked"
+        for key in existing:
+            del self.exclusions[key]
+        return "removed"
 
     def list_exclusions(self, event_id):
-        return {(giver, receiver) for stored_event, giver, receiver in self.exclusions if stored_event == event_id}
+        return {(left, right) for (stored_event, left, right) in self.exclusions if stored_event == event_id}
+
+    def list_locked_pairs(self, event_id):
+        seen = set()
+        pairs = []
+        for (stored_event, left, right), locked in self.exclusions.items():
+            if stored_event != event_id or not locked:
+                continue
+            key = tuple(sorted((left, right)))
+            if key in seen or key[0] == key[1]:
+                continue
+            seen.add(key)
+            pairs.append(key)
+        return pairs
 
     def replace_pairings(self, event_id, pairs):
         self.replace_calls += 1
@@ -654,6 +678,73 @@ async def test_notification_form_saves_the_organizer_choices():
     await modal.on_submit(rejected)
     assert database.get_open_event("guild")["profile_reminders"] is False
     assert "organizer" in rejected.followup.messages[0].lower()
+
+
+def test_organizer_locks_spending_cap_and_rules():
+    svc, database = service()
+    assert svc.block_pair("guild", "org", False, "11", "Ada", "22", "Bea").code == "no_event"
+    svc.create_event("guild", "org", "Party")
+    assert svc.set_event_copy("guild", "org", False, "rules", "Handmade gifts only").ok
+    joined = svc.join("guild", "11", "Ada")
+    assert "Rules for this event" in joined.data["welcome"].text()
+    assert "Handmade gifts only" in joined.data["welcome"].text()
+    assert svc.block_pair("guild", "11", False, "11", "Ada", "22", "Bea").code == "forbidden"
+    locked = svc.block_pair("guild", "org", False, "11", "Ada", "22", "Bea")
+    assert locked.ok
+    assert "cannot remove this" in locked.message
+    assert "joined yet" in locked.message
+    ready_participant(svc, "guild", "22", "Bea")
+    ready_participant(svc, "guild", "33", "Cara")
+    ready_participant(svc, "guild", "44", "Dee")
+    ready_participant(svc, "guild", "11", "Ada")
+    assert svc.unexclude("guild", "11", "22", "Bea").code == "locked"
+    assert svc.exclude("guild", "11", "22", "Bea").ok
+    assert svc.unexclude("guild", "11", "22", "Bea").code == "locked"
+    assert svc.set_event_copy("guild", "11", False, "spending_cap", "$25").code == "forbidden"
+    assert svc.set_event_copy("guild", "org", False, "spending_cap", "  $25 ").ok
+    assert svc.set_event_copy("guild", "org", False, "rules", "x" * 501).code == "too_long"
+    assert svc.start("guild", "org", False).ok
+    event_id = database.get_open_event("guild")["id"]
+    pairs = {row["giver_id"]: row["receiver_id"] for row in database.list_pairings(event_id)}
+    assert pairs["11"] != "22"
+    assert pairs["22"] != "11"
+    svc.set_text_field("guild", "22", "budget", "$10", False)
+    personal = svc.match_info("guild", next(giver for giver, receiver in pairs.items() if receiver == "22"))
+    assert "$10" in personal.message
+    assert "for this event" not in personal.message
+    shared = svc.match_info("guild", next(giver for giver, receiver in pairs.items() if receiver == "11"))
+    assert "$25 for this event" in shared.message
+    assert "Handmade gifts only" in shared.message
+    listed = svc.locked_blocks("guild", "org", False)
+    assert "<@11>" in listed.message and "<@22>" in listed.message
+    assert svc.unblock_pair("guild", "org", False, "11", "22", "Ada", "Bea").ok
+    assert svc.locked_blocks("guild", "org", False).message == "**No organizer locks yet.**"
+    assert ("11", "22") not in database.list_exclusions(event_id)
+
+    database.pairings[event_id] = [
+        {"giver_id": "11", "receiver_id": "22", "gift_status": "bought", "tracking_url": ""},
+        {"giver_id": "22", "receiver_id": "33", "gift_status": "not_bought", "tracking_url": ""},
+        {"giver_id": "33", "receiver_id": "44", "gift_status": "not_bought", "tracking_url": ""},
+        {"giver_id": "44", "receiver_id": "11", "gift_status": "not_bought", "tracking_url": ""},
+    ]
+    separated = svc.block_pair("guild", "org", False, "11", "Ada", "22", "Bea")
+    assert separated.ok
+    assert separated.data["changed"]
+    redrawn = {row["giver_id"]: row["receiver_id"] for row in database.list_pairings(event_id)}
+    assert redrawn["11"] != "22"
+    assert redrawn["22"] != "11"
+
+    tiny, tiny_db = service()
+    tiny.create_event("guild", "org", "Party")
+    for user_id, name in (("11", "Ada"), ("22", "Bea"), ("33", "Cara")):
+        ready_participant(tiny, "guild", user_id, name)
+    assert tiny.start("guild", "org", False).ok
+    tiny_id = tiny_db.get_open_event("guild")["id"]
+    before = tiny_db.list_pairings(tiny_id)
+    refused = tiny.block_pair("guild", "org", False, "11", "Ada", "22", "Bea")
+    assert refused.code == "no_draw"
+    assert tiny_db.list_pairings(tiny_id) == before
+    assert tiny_db.list_locked_pairs(tiny_id) == []
 
 
 def test_budget_notes_tracking_and_reports():

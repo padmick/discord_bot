@@ -137,7 +137,9 @@ def test_command_descriptions_fit_slash_limits():
     helper = CustomHelpCommand()
     assert helper.command_attrs["help"] == "Show commands grouped by what you are doing"
     commands_by_name = {command.name: command for command in SecretSantaCog.__cog_commands__}
-    assert {"problem", "idea", "news", "tutorial", "setbudget", "notes", "reports"} <= set(commands_by_name)
+    assert {"problem", "idea", "news", "tutorial", "setbudget", "notes", "reports", "block", "cap", "rules"} <= set(
+        commands_by_name
+    )
     assert "include" in commands_by_name["unexclude"].aliases
     assert not any("guild_only" in getattr(check, "__qualname__", "") for check in commands_by_name["status"].checks)
 
@@ -154,6 +156,22 @@ def test_profile_match_and_status_keep_private_text_in_the_right_card():
     )
     assert "99 Private Road" in profile.text()
     assert "Spending limit" in profile.text()
+    capped = match_card(
+        {
+            "name": "Bea",
+            "wishlist": "books",
+            "budget": "",
+            "spending_cap": "$25",
+            "rules": "No candles",
+            "digital_only": False,
+        }
+    )
+    assert "$25 for this event" in capped.text()
+    assert "No candles" in capped.text()
+    own = match_card({"name": "Bea", "budget": "$10", "spending_cap": "$25", "digital_only": True})
+    assert "$10" in own.text()
+    assert "for this event" not in own.text()
+    assert "Rules for this event" in welcome_card("Ada", "Party", "Handmade only").text()
     assert "shirt" not in profile.text().lower()
     match = match_card({"name": "@here", "wishlist": "books", "digital_only": True})
     assert "@here" not in match.text()
@@ -240,11 +258,11 @@ def test_roster_reminders_notes_and_reveal_layout():
     assert "GIF" in hint.text()
     assert "shows once" in hint.footer
     news = changelog_card()
-    assert CHANGELOG_VERSION == 2
+    assert CHANGELOG_VERSION == 3
     assert "What's new" in news.title
-    assert "s!setbudget" in news.text()
-    assert "s!notes" in news.text()
-    assert "s!reports" in news.text()
+    assert "s!block" in news.text()
+    assert "s!cap" in news.text()
+    assert "s!rules" in news.text()
     copied = notes_card([("To the person you're buying for", "hello @Ada", "https://cdn.example/a.gif")])
     assert "@Ada" not in copied.text()
     assert "hello" in copied.text()

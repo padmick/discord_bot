@@ -331,6 +331,84 @@ class SecretSantaCog(commands.Cog):
         )
         await _show(ctx, result)
 
+    @commands.hybrid_command(name="block", help="Keep two people from being matched")
+    @commands.guild_only()
+    async def block(self, ctx, first: discord.Member, second: discord.Member):
+        """Keep two people from being matched."""
+        if first.bot or second.bot:
+            await _say(ctx, "Pick two people. Bots are not in the draw.")
+            return
+        result = await self.run(
+            self.service.block_pair,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+            str(first.id),
+            first.display_name,
+            str(second.id),
+            second.display_name,
+        )
+        await self._after_roster_change(ctx, result, "BLOCK")
+
+    @commands.hybrid_command(name="unblock", help="Remove an organizer lock between two people")
+    @commands.guild_only()
+    async def unblock(self, ctx, first: discord.Member, second: discord.Member):
+        """Remove an organizer lock between two people."""
+        result = await self.run(
+            self.service.unblock_pair,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+            str(first.id),
+            str(second.id),
+            first.display_name,
+            second.display_name,
+        )
+        await _show(ctx, result)
+
+    @commands.hybrid_command(name="blocks", help="DM the pairs the organizer locked apart")
+    @commands.guild_only()
+    async def blocks(self, ctx):
+        """DM the pairs the organizer locked apart."""
+        result = await self.run(
+            self.service.locked_blocks,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+        )
+        if not result.ok or result.card is None:
+            await _show(ctx, result)
+            return
+        await self._private(ctx, result.message, card=result.card)
+
+    @commands.hybrid_command(name="cap", help="Set the event spending cap, or clear it")
+    @commands.guild_only()
+    async def cap(self, ctx, *, text: str = ""):
+        """Set the event spending cap, or clear it."""
+        result = await self.run(
+            self.service.set_event_copy,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+            "spending_cap",
+            text,
+        )
+        await _show(ctx, result)
+
+    @commands.hybrid_command(name="rules", help="Set a short rules note, or clear it")
+    @commands.guild_only()
+    async def rules(self, ctx, *, text: str = ""):
+        """Set a short rules note, or clear it."""
+        result = await self.run(
+            self.service.set_event_copy,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+            "rules",
+            text,
+        )
+        await _show(ctx, result)
+
     @commands.hybrid_command(name="remove", help="Remove a participant")
     @commands.guild_only()
     async def remove(self, ctx, member: discord.Member):
@@ -867,6 +945,8 @@ def _match_card(note: dict) -> Card:
             "do_not_gift": note.get("do_not_gift"),
             "notes": note.get("notes"),
             "budget": note.get("budget"),
+            "spending_cap": note.get("spending_cap"),
+            "rules": note.get("rules"),
             "digital_only": note.get("digital_only"),
         }
     )

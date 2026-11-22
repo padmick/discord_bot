@@ -13,6 +13,22 @@ def db(postgres_url):
     manager.close()
 
 
+def test_organizer_lock_cap_and_rules_round_trip(db):
+    event = db.create_event("guild-rules", "Party", "org")
+    db.add_exclusion_pair(event["id"], "11", "22", locked=True)
+    assert db.remove_exclusion_pair(event["id"], "11", "22") == "locked"
+    assert ("11", "22") in db.list_exclusions(event["id"])
+    assert db.list_locked_pairs(event["id"]) == [("11", "22")]
+    db.add_exclusion_pair(event["id"], "11", "22", locked=False)
+    assert db.list_locked_pairs(event["id"]) == [("11", "22")]
+    assert db.remove_exclusion_pair(event["id"], "11", "22", include_locked=True) == "removed"
+    assert db.list_exclusions(event["id"]) == set()
+    db.update_event(event["id"], spending_cap="$25", rules="Handmade only")
+    stored = db.get_event(event["id"])
+    assert stored["spending_cap"] == "$25"
+    assert stored["rules"] == "Handmade only"
+
+
 def test_budget_tracking_notes_and_reports_round_trip(db):
     event = db.create_event("guild-budget", "Party", "org")
     db.add_participant(event["id"], "ada", "Ada")
@@ -274,6 +290,8 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
         assert event["shipping_reminders"] is True
         assert event["reminder_interval_days"] == 7
         assert event["shipping_lead_days"] == 3
+        assert event["spending_cap"] is None
+        assert event["rules"] is None
         assert manager.claim_changelog("ada", 1) is True
         assert manager.claim_changelog("ada", 1) is False
         assert manager.claim_changelog("ada", 2) is True
@@ -294,7 +312,7 @@ def test_version_two_drops_shirt_size_and_adds_reminder_settings(postgres_url):
             cursor.execute("SELECT tip_id FROM tips_seen WHERE user_id = 'ada' ORDER BY tip_id")
             assert [row[0] for row in cursor.fetchall()] == ["notes", "profile"]
             cursor.execute("SELECT MAX(version) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 5
+            assert cursor.fetchone()[0] == 6
     finally:
         check.close()
 

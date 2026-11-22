@@ -12,7 +12,8 @@ from psycopg2.pool import ThreadedConnectionPool
 EVENT_FIELDS = (
     "id, guild_id, name, phase, organizer_id, deadline, "
     "last_profile_reminder, last_shipping_reminder, "
-    "profile_reminders, shipping_reminders, reminder_interval_days, shipping_lead_days"
+    "profile_reminders, shipping_reminders, reminder_interval_days, shipping_lead_days, "
+    "spending_cap, rules"
 )
 
 
@@ -43,6 +44,8 @@ EVENT_UPDATE_FIELDS = {
     "shipping_reminders",
     "reminder_interval_days",
     "shipping_lead_days",
+    "spending_cap",
+    "rules",
 }
 
 
@@ -336,22 +339,47 @@ class DatabaseManager:
 
         return self._run(query)
 
-    def add_exclusion_pair(self, event_id: int, user_id: str, other_id: str) -> None:
+    def add_exclusion_pair(self, event_id: int, user_id: str, other_id: str, locked: bool = False) -> None:
         def query(cur):
             for giver, receiver in ((str(user_id), str(other_id)), (str(other_id), str(user_id))):
                 cur.execute(
                     """
-                    INSERT INTO exclusions (event_id, user_id, excluded_user_id)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT DO NOTHING
+                    INSERT INTO exclusions (event_id, user_id, excluded_user_id, locked)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (event_id, user_id, excluded_user_id)
+                    DO UPDATE SET locked = exclusions.locked OR EXCLUDED.locked
                     """,
-                    (event_id, giver, receiver),
+                    (event_id, giver, receiver, bool(locked)),
                 )
 
         self._run(query)
 
-    def remove_exclusion_pair(self, event_id: int, user_id: str, other_id: str) -> int:
+    def remove_exclusion_pair(
+        self,
+        event_id: int,
+        user_id: str,
+        other_id: str,
+        *,
+        include_locked: bool = False,
+    ) -> str:
         def query(cur):
+            cur.execute(
+                """
+                SELECT locked
+                FROM exclusions
+                WHERE event_id = %s
+                  AND (
+                    (user_id = %s AND excluded_user_id = %s)
+                    OR (user_id = %s AND excluded_user_id = %s)
+                  )
+                """,
+                (event_id, str(user_id), str(other_id), str(other_id), str(user_id)),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                return "missing"
+            if not include_locked and any(row["locked"] for row in rows):
+                return "locked"
             cur.execute(
                 """
                 DELETE FROM exclusions
@@ -363,7 +391,21 @@ class DatabaseManager:
                 """,
                 (event_id, str(user_id), str(other_id), str(other_id), str(user_id)),
             )
-            return cur.rowcount
+            return "removed"
+
+        return self._run(query)
+
+    def list_locked_pairs(self, event_id: int) -> list[tuple[str, str]]:
+        def query(cur):
+            cur.execute(
+                """
+                SELECT user_id, excluded_user_id
+                FROM exclusions
+                WHERE event_id = %s AND locked
+                """,
+                (event_id,),
+            )
+            return _unique_pairs((row["user_id"], row["excluded_user_id"]) for row in cur.fetchall())
 
         return self._run(query)
 
@@ -537,6 +579,8 @@ class DatabaseManager:
             self._migrate_v4(cur)
         if self._schema_version(cur) < 5:
             self._migrate_v5(cur)
+        if self._schema_version(cur) < 6:
+            self._migrate_v6(cur)
         return legacy_count
 
     def _migrate_v1(self, cur) -> int | None:
@@ -565,6 +609,8 @@ class DatabaseManager:
                 shipping_reminders BOOLEAN NOT NULL DEFAULT TRUE,
                 reminder_interval_days INTEGER NOT NULL DEFAULT 7,
                 shipping_lead_days INTEGER NOT NULL DEFAULT 3,
+                spending_cap TEXT,
+                rules TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT events_phase_check CHECK (phase IN ('signup', 'locked', 'drawn', 'done'))
             )
@@ -600,6 +646,7 @@ class DatabaseManager:
                 event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
                 user_id TEXT NOT NULL,
                 excluded_user_id TEXT NOT NULL,
+                locked BOOLEAN NOT NULL DEFAULT FALSE,
                 PRIMARY KEY (event_id, user_id, excluded_user_id)
             )
             """
@@ -714,6 +761,19 @@ class DatabaseManager:
         )
         cur.execute("INSERT INTO schema_migrations (version) VALUES (5)")
 
+    def _migrate_v6(self, cur) -> None:
+        if self._table_exists(cur, "events"):
+            cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS spending_cap TEXT")
+            cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS rules TEXT")
+        if self._table_exists(cur, "exclusions"):
+            cur.execute(
+                """
+                ALTER TABLE exclusions
+                ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE
+                """
+            )
+        cur.execute("INSERT INTO schema_migrations (version) VALUES (6)")
+
     def _schema_version(self, cur) -> int:
         cur.execute("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")
         return int(cur.fetchone()["version"])
@@ -734,6 +794,18 @@ class DatabaseManager:
     def _table_exists(cur, table: str) -> bool:
         cur.execute("SELECT to_regclass(%s) AS relation", (f"public.{table}",))
         return cur.fetchone()["relation"] is not None
+
+
+def _unique_pairs(rows: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen: set[tuple[str, str]] = set()
+    pairs: list[tuple[str, str]] = []
+    for left, right in rows:
+        key = tuple(sorted((str(left), str(right))))
+        if key in seen or key[0] == key[1]:
+            continue
+        seen.add(key)
+        pairs.append(key)
+    return pairs
 
 
 def _assignments(fields: dict[str, Any], allowed: set[str]) -> tuple[str, list[Any]]:
