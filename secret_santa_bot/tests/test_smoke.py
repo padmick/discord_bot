@@ -208,6 +208,8 @@ async def test_one_event_exercises_every_feature(db):
     deadline = (date.today() + timedelta(days=2)).isoformat()
     created = await invoke(cog, SecretSantaCog.create, org, name="Winter Party")
     assert "Winter Party" in plain(created.sent)
+    assert created.sent[-1]["view"] is not None
+    assert "Set up" in plain(created.sent)
     rules = await invoke(cog, SecretSantaCog.rules, org, text="Handmade gifts only")
     assert "Handmade gifts only" in plain(rules.sent)
     cap = await invoke(cog, SecretSantaCog.cap, org, text="$25")
@@ -439,6 +441,7 @@ async def test_one_event_exercises_every_feature(db):
     assert "no organizer locks" in plain(carried.sent).lower()
     again = await invoke(cog, SecretSantaCog.join, ada)
     assert "Past matches in this server" in inbox(ada)
+    assert "Tutorial ·" in inbox(ada)
     assert any(item.get("view") is not None for item in ada.sent)
     assert "guide is in your DMs" in plain(again.sent)
     cancelled = await invoke(cog, SecretSantaCog.cancel, org)

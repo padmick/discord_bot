@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import discord
 
 # Bump this, and rewrite changelog_card, when a release should show a new note.
-CHANGELOG_VERSION = 4
+CHANGELOG_VERSION = 5
 
 SANTA_RED = 0xC23B22
 GIFT_STATUSES = ("not_bought", "bought", "shipped", "received")
@@ -24,6 +24,7 @@ HELP_GROUPS = (
         (
             "help",
             "tutorial",
+            "hint",
             "info",
             "join",
             "leave",
@@ -48,6 +49,8 @@ HELP_GROUPS = (
         "Organizer",
         (
             "create",
+            "setup",
+            "announce",
             "lock",
             "unlock",
             "deadline",
@@ -177,7 +180,9 @@ def guide_fields() -> tuple[Field, ...]:
         ),
         Field(
             "Running the event",
-            "`s!create` opens one event in this server. The organizer is not in the draw until they join.\n"
+            "`s!create` opens one event and walks through the setup. `s!setup` opens that guide again. "
+            "The organizer is not in the draw until they join.\n"
+            "`s!announce` posts how to join in a channel you choose. "
             "`s!lock`, `s!deadline`, and `s!settings` are optional. `s!signupby` is the last day to join. "
             "`s!settings` chooses which reminders go out and how many days apart.\n"
             "`s!block` keeps two people apart. `s!carrylocks` copies last year's locks. "
@@ -458,8 +463,10 @@ def anonymous_card(direction: str, body: str, reply_as: str, image: str = "") ->
 TUTORIAL_PAGES: tuple[tuple[str, str], ...] = (
     (
         "Joining",
-        "In the server, run `s!join` or `/join`. A guide arrives by DM.\n"
-        "`s!help` lists every command. `s!info` shows that guide again. "
+        "In the server, run `s!join` or `/join`. A guide arrives by DM. "
+        "The first time you join, this walkthrough arrives too.\n"
+        "Next, fill in a wishlist. Add an address unless the gift is digital. `/profile` is the private form.\n"
+        "`s!help` lists every command. `s!hint` shows a hint again. "
         "`s!tutorial` starts this walkthrough whenever you ask.",
     ),
     (
@@ -557,7 +564,18 @@ TIPS: dict[str, tuple[str, str]] = {
     ),
     "ask-tutorial": (
         "A walkthrough when you want it",
-        "`s!tutorial` walks through the commands one page at a time. It starts only when you ask.",
+        "`s!tutorial` walks through the commands one page at a time. It also arrives the first time you join. "
+        "`s!hint` shows any hint again.",
+    ),
+    "setup": (
+        "Set up the event",
+        "`s!create` opens a guide for the signup date, gift deadline, spending cap, and rules. "
+        "`s!setup` opens that guide again. Leave a line blank to keep it, or type clear to remove it.",
+    ),
+    "announce": (
+        "Tell the server signup is open",
+        "On the setup guide, choose a channel. `s!announce #channel` posts the same note: "
+        "the event is open and people join with `s!join`.",
     ),
 }
 
@@ -618,20 +636,132 @@ def changelog_card() -> Card:
         description="A quick look at the latest Secret Santa updates.",
         fields=(
             Field(
-                "Past matches",
-                "When you join, the menu lists people you were paired with in this server before. Choose who to skip.",
+                "Setup guide",
+                "`s!create` walks through the signup date, gift deadline, spending cap, and rules. `s!setup` opens it again.",
             ),
             Field(
-                "Still to ship",
-                "`s!waiting` DMs the organizer the names of people who have not shipped. The match stays hidden.",
+                "Open announcement",
+                "Choose a channel on that guide, or use `s!announce`. The bot posts that signup is open and how to join.",
             ),
             Field(
-                "Signup date",
-                "`s!signupby` sets the last day to join. The gift deadline stays on `s!deadline`.",
+                "First join",
+                "The first time someone joins, the tutorial arrives. `s!tutorial`, `s!hint`, and `s!help` work anytime.",
             ),
         ),
         footer="This shows once. A new note appears only when something new ships.",
     )
+
+
+def _day_line(value: object) -> str:
+    if value is None or value == "":
+        return "Not set"
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    text = str(value).strip()
+    return text or "Not set"
+
+
+def setup_card(event: dict, intro: str = "") -> Card:
+    name = label(event.get("name"), "Secret Santa")
+    guidance = (
+        "Set the signup date and gift deadline, then a spending cap and rules if you want them. "
+        "Then pick a channel below, or use `s!announce`, so people know how to join.\n"
+        "You are not in the draw until you join. "
+        "`s!help` lists commands. `s!tutorial` walks through them. `s!hint` shows a hint again."
+    )
+    description = f"{intro.strip()}\n\n{guidance}" if intro.strip() else guidance
+    channel_id = str(event.get("announce_channel_id") or "").strip()
+    announced = f"<#{channel_id}>" if channel_id.isdigit() else "Not posted yet"
+    return Card(
+        title=f"Set up {name}"[:256],
+        description=description[:4096],
+        fields=(
+            Field("Last day to join", _day_line(event.get("signup_deadline")), inline=True),
+            Field("Gift deadline", _day_line(event.get("deadline")), inline=True),
+            Field("Spending cap", shown(event.get("spending_cap"), "Not set"), inline=True),
+            Field("Rules", shown(event.get("rules"), "Not set")),
+            Field("Announcement", announced),
+        ),
+        footer="Blank form fields stay as they are. Type clear to remove one.",
+    )
+
+
+def open_announcement_card(event: dict) -> Card:
+    name = label(event.get("name"), "Secret Santa")
+    fields = [
+        Field(
+            "How to join",
+            "Run `s!join` or `/join` in this server. A guide arrives by DM. "
+            "The first time you join, a tutorial arrives so you can fill in your profile. "
+            "`s!help`, `s!tutorial`, and `s!hint` work anytime.",
+        ),
+        Field("Last day to join", _day_line(event.get("signup_deadline")), inline=True),
+        Field("Gift deadline", _day_line(event.get("deadline")), inline=True),
+        Field("Spending cap", shown(event.get("spending_cap"), "Not set"), inline=True),
+    ]
+    rules = str(event.get("rules") or "").strip()
+    if rules:
+        fields.append(Field("Rules", shown(rules, "")))
+    return Card(
+        title=f"{name} is open"[:256],
+        description=f"{name} signup is open. Join here and the bot will DM you what to do next.",
+        fields=tuple(fields),
+        footer="The organizer posted this. s!join adds you to the draw.",
+    )
+
+
+def hints_index_card() -> Card:
+    lines = [f"`s!hint {tip_id}` — {title}" for tip_id, (title, _body) in TIPS.items()]
+    return Card(
+        title="Hints",
+        description="\n".join(lines),
+        footer="These work anytime. s!tutorial walks through the steps. s!help lists every command.",
+    )
+
+
+def anytime_hint_card(tip_id: str) -> Card:
+    title, body = TIPS[tip_id]
+    return Card(
+        title=title,
+        description=body,
+        footer="Ask for this again anytime with s!hint. s!tutorial walks through the steps. s!help lists commands.",
+    )
+
+
+HINT_ALIASES = {
+    "profile": "profile",
+    "wishlist": "profile",
+    "address": "profile",
+    "past": "past-match",
+    "past-match": "past-match",
+    "skip": "skip-later",
+    "exclude": "skip-later",
+    "notes": "notes",
+    "message": "notes",
+    "gift": "gift-steps",
+    "gift-steps": "gift-steps",
+    "privacy": "privacy",
+    "status": "privacy",
+    "organizer": "organizer",
+    "create": "organizer",
+    "tutorial": "ask-tutorial",
+    "help": "ask-tutorial",
+    "ask-tutorial": "ask-tutorial",
+    "setup": "setup",
+    "announce": "announce",
+    "welcome": "announce",
+}
+
+
+def resolve_hint(topic: str) -> str:
+    """Return a tip id, or an empty string when the topic is not a hint."""
+    text = " ".join((topic or "").lower().split())
+    if text in HINT_ALIASES:
+        return HINT_ALIASES[text]
+    for tip_id, (title, _body) in TIPS.items():
+        if text == title.lower():
+            return tip_id
+    return ""
 
 
 def event_setup_card(cap: object, rules: object) -> Card:

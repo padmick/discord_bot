@@ -32,6 +32,10 @@ from present import (
     shipping_reminder_card,
     status_card,
     to_embed,
+    hints_index_card,
+    open_announcement_card,
+    resolve_hint,
+    setup_card,
     waiting_card,
     wishlist_update_card,
     welcome_card,
@@ -148,7 +152,7 @@ def test_command_descriptions_fit_slash_limits():
     assert {"problem", "idea", "news", "tutorial", "setbudget", "notes", "reports", "block", "cap", "rules"} <= set(
         commands_by_name
     )
-    assert {"signupby", "carrylocks", "waiting"} <= set(commands_by_name)
+    assert {"signupby", "carrylocks", "waiting", "setup", "announce", "hint"} <= set(commands_by_name)
     assert "include" in commands_by_name["unexclude"].aliases
     assert not any("guild_only" in getattr(check, "__qualname__", "") for check in commands_by_name["status"].checks)
 
@@ -191,6 +195,28 @@ def test_profile_match_and_status_keep_private_text_in_the_right_card():
     assert "Ada — not bought" in pending.text()
     assert "Bea" not in pending.text()
     assert "match is not listed" in pending.footer
+    guide = setup_card(
+        {
+            "name": "Party",
+            "signup_deadline": "2026-12-01",
+            "deadline": None,
+            "spending_cap": "$25",
+            "rules": None,
+            "announce_channel_id": None,
+        },
+        "Created.",
+    )
+    assert "Set up Party" in guide.title
+    assert "Created." in guide.text()
+    assert "Not posted yet" in guide.text()
+    opened = open_announcement_card(
+        {"name": "Party", "signup_deadline": None, "deadline": "2026-12-20", "spending_cap": None, "rules": "Handmade"}
+    )
+    assert "s!join" in opened.text()
+    assert "Handmade" in opened.text()
+    assert "s!hint profile" in hints_index_card().text()
+    assert resolve_hint("wishlist") == "profile"
+    assert resolve_hint("nope") == ""
     dated = status_card(
         {
             "name": "Party",
@@ -291,11 +317,11 @@ def test_roster_reminders_notes_and_reveal_layout():
     assert "GIF" in hint.text()
     assert "shows once" in hint.footer
     news = changelog_card()
-    assert CHANGELOG_VERSION == 4
+    assert CHANGELOG_VERSION == 5
     assert "What's new" in news.title
-    assert "s!waiting" in news.text()
-    assert "s!signupby" in news.text()
-    assert "skip" in news.text().lower()
+    assert "s!setup" in news.text()
+    assert "s!announce" in news.text()
+    assert "s!hint" in news.text()
     copied = notes_card([("To the person you're buying for", "hello @Ada", "https://cdn.example/a.gif")])
     assert "@Ada" not in copied.text()
     assert "hello" in copied.text()

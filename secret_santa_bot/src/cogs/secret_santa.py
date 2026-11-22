@@ -26,6 +26,7 @@ from present import (
     removed_card,
     reveal_cards,
     shipping_reminder_card,
+    setup_card,
     shipped_card,
     to_embed,
     wishlist_update_card,
@@ -37,7 +38,7 @@ from services import (
     resolve_dm_events,
 )
 from utils import log_event, report_failure
-from views import NotificationSettingsView, PastPartnerView, ProfileView, ReplyView, TutorialView
+from views import NotificationSettingsView, PastPartnerView, ProfileView, ReplyView, SetupView, TutorialView
 
 
 class RateLimited(commands.CommandError):
@@ -188,9 +189,43 @@ class SecretSantaCog(commands.Cog):
     async def create(self, ctx, *, name: str = "Secret Santa"):
         """Create a Secret Santa event in this server."""
         result = await self.run(self.service.create_event, str(ctx.guild.id), str(ctx.author.id), name)
-        if result.ok:
-            log_event("CREATE", f"guild {ctx.guild.id} organizer {ctx.author.id} event {result.data['event_id']}")
-        await _show(ctx, result)
+        if not result.ok:
+            await _show(ctx, result)
+            return
+        log_event("CREATE", f"guild {ctx.guild.id} organizer {ctx.author.id} event {result.data['event_id']}")
+        event = result.data.get("event") or {}
+        await _send_card(
+            ctx,
+            setup_card(event, result.message),
+            view=SetupView(self, str(ctx.guild.id), str(ctx.author.id)),
+        )
+
+    @commands.hybrid_command(name="setup", help="Open the event setup guide again")
+    @commands.guild_only()
+    async def setup(self, ctx):
+        """Open the event setup guide again."""
+        result = await self.run(
+            self.service.setup_overview,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+        )
+        if not result.ok or result.card is None:
+            await _show(ctx, result)
+            return
+        await _send_card(ctx, result.card, view=SetupView(self, str(ctx.guild.id), str(ctx.author.id)))
+
+    @commands.hybrid_command(name="announce", help="Post that signup is open in a channel")
+    @commands.guild_only()
+    async def announce(self, ctx, channel: discord.TextChannel):
+        """Post that signup is open in a channel."""
+        _ok, message = await self.post_open_announcement(
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+            channel,
+        )
+        await _say(ctx, message)
 
     @commands.hybrid_command(name="join", help="Join the open Secret Santa and get a DM that explains it")
     @commands.guild_only()
@@ -205,6 +240,9 @@ class SecretSantaCog(commands.Cog):
         delivered = await self._dm_card(str(ctx.author.id), welcome, view=history) if welcome is not None else False
         if result.ok:
             log_event("JOIN", f"guild {ctx.guild.id} user {ctx.author.id}")
+        first_tutorial = False
+        if result.ok:
+            first_tutorial = await self.run(self.service.claim_tip, str(ctx.author.id), "seen-join-tutorial")
         if welcome is not None and delivered:
             await _say(ctx, result.message + "\nThe guide is in your DMs.")
         else:
@@ -212,6 +250,11 @@ class SecretSantaCog(commands.Cog):
         if welcome is not None and not delivered:
             await _say(ctx, "I couldn't DM the welcome note, so here it is.")
             await _send_card(ctx, welcome, view=history)
+        if first_tutorial:
+            walkthrough = tutorial_card(0)
+            tour = TutorialView(0)
+            if not await self._dm_card(str(ctx.author.id), walkthrough, view=tour):
+                await _send_card(ctx, walkthrough, view=tour)
 
     @commands.hybrid_command(name="leave", help="Leave the Secret Santa")
     @commands.guild_only()
@@ -564,6 +607,12 @@ class SecretSantaCog(commands.Cog):
             ephemeral=getattr(ctx, "interaction", None) is not None,
         )
 
+    @commands.hybrid_command(name="hint", help="Show a hint again, or list them")
+    async def hint(self, ctx, *, topic: str = ""):
+        """Show a hint again, or list them."""
+        result = await self.run(self.service.show_hint, topic)
+        await _show(ctx, result, ephemeral=getattr(ctx, "interaction", None) is not None)
+
     async def _feedback(self, ctx, kind: str, text: str):
         guild_id = str(ctx.guild.id) if ctx.guild is not None else ""
         result = await self.run(self.service.submit_feedback, guild_id, str(ctx.author.id), kind, text)
@@ -903,6 +952,24 @@ class SecretSantaCog(commands.Cog):
 
     async def _dm_assignment(self, note: dict) -> bool:
         return await self._dm_card(note["giver_id"], _match_card(note), reply_as="giftee")
+
+    async def post_open_announcement(self, guild_id: str, actor_id: str, is_admin: bool, channel) -> tuple[bool, str]:
+        result = await self.run(
+            self.service.prepare_announcement,
+            guild_id,
+            actor_id,
+            is_admin,
+            str(getattr(channel, "id", "")),
+        )
+        if not result.ok or result.card is None:
+            return False, result.message
+        try:
+            await channel.send(embed=to_embed(result.card))
+        except discord.Forbidden:
+            return False, "I can't post in that channel. Give me permission to send messages there."
+        await self.run(self.service.remember_announcement, guild_id, actor_id, is_admin, str(channel.id))
+        mention = getattr(channel, "mention", None) or "that channel"
+        return True, f"Posted the open announcement in {mention}."
 
     async def _dm_card(
         self,

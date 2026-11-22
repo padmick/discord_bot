@@ -335,6 +335,147 @@ class NotificationSettingsView(discord.ui.View):
         await report_component_failure(f"notification settings guild {self.guild_id}", interaction, error)
 
 
+class SetupModal(discord.ui.Modal, title="Event setup"):
+    def __init__(self, cog, guild_id: str, user_id: str):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        self.signup = discord.ui.TextInput(
+            label="Last day to join",
+            placeholder="2026-12-01, or clear",
+            required=False,
+            max_length=20,
+        )
+        self.deadline = discord.ui.TextInput(
+            label="Gift deadline",
+            placeholder="2026-12-20, or clear",
+            required=False,
+            max_length=20,
+        )
+        self.cap = discord.ui.TextInput(
+            label="Spending cap",
+            placeholder="$25, or clear",
+            required=False,
+            max_length=80,
+        )
+        self.rules = discord.ui.TextInput(
+            label="Rules note",
+            style=discord.TextStyle.paragraph,
+            placeholder="Handmade gifts, or clear",
+            required=False,
+            max_length=500,
+        )
+        for item in (self.signup, self.deadline, self.cap, self.rules):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("This form belongs to the person who opened it.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await self.cog.run(
+                self.cog.service.apply_setup,
+                self.guild_id,
+                str(interaction.user.id),
+                _interaction_is_admin(interaction),
+                self.signup.value,
+                self.deadline.value,
+                self.cap.value,
+                self.rules.value,
+            )
+            if result.card is not None:
+                await interaction.followup.send(result.message, embed=to_embed(result.card), ephemeral=True)
+            else:
+                await interaction.followup.send(result.message, ephemeral=True)
+        except Exception as exc:
+            report_failure(f"setup form guild {self.guild_id}", exc)
+            await interaction.followup.send("The setup could not be saved.", ephemeral=True)
+
+    async def on_error(self, interaction, error, /) -> None:
+        await report_component_failure(f"setup form guild {self.guild_id}", interaction, error)
+
+
+class AnnounceChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="Channel that should hear signup is open",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, SetupView):
+            await interaction.response.send_message("This menu is not available right now.", ephemeral=True)
+            return
+        if str(interaction.user.id) != view.user_id:
+            await interaction.response.send_message(
+                "This guide belongs to the person who opened it.",
+                ephemeral=True,
+            )
+            return
+        channel = await _resolve_text_channel(interaction, self.values[0])
+        if channel is None:
+            await interaction.response.send_message("Choose a text channel in this server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            _ok, message = await view.cog.post_open_announcement(
+                view.guild_id,
+                str(interaction.user.id),
+                _interaction_is_admin(interaction),
+                channel,
+            )
+            await interaction.followup.send(message, ephemeral=True)
+        except Exception as exc:
+            report_failure(f"announce guild {view.guild_id}", exc)
+            await interaction.followup.send("The announcement could not be posted.", ephemeral=True)
+
+
+class SetupView(discord.ui.View):
+    def __init__(self, cog, guild_id: str, user_id: str):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        self.add_item(AnnounceChannelSelect())
+
+    @discord.ui.button(label="Set dates, cap, and rules", style=discord.ButtonStyle.primary)
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        del button
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message(
+                "This guide belongs to the person who opened it.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(SetupModal(self.cog, self.guild_id, self.user_id))
+
+    async def on_error(self, interaction, error, item, /) -> None:
+        del item
+        await report_component_failure(f"SetupView guild {self.guild_id}", interaction, error)
+
+
+async def _resolve_text_channel(interaction, selected):
+    channel_id = getattr(selected, "id", None)
+    guild = getattr(interaction, "guild", None)
+    if guild is not None and channel_id is not None:
+        found = guild.get_channel(int(channel_id))
+        if found is None and hasattr(guild, "fetch_channel"):
+            try:
+                found = await guild.fetch_channel(int(channel_id))
+            except (discord.Forbidden, discord.HTTPException):
+                found = None
+        if found is not None:
+            return found
+    if hasattr(selected, "send"):
+        return selected
+    return None
+
+
 class PastPartnerSelect(discord.ui.Select):
     """Finished-event partners. The person chooses which ones to skip again."""
 
