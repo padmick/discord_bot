@@ -380,6 +380,9 @@ def test_physical_gift_still_requires_an_address():
     assert any("address" in person["missing"] for person in result.data["missing"])
     forced = svc.start("guild", "org", False, True)
     assert forced.code == "missing_info"
+    assert "need an address" in forced.message
+    assert "does not block this draw" in forced.message
+    assert forced.data["missing"] == [{"user_id": "b", "name": "Bea", "missing": ["address"]}]
     assert database.get_open_event("guild")["phase"] == "signup"
 
 
@@ -448,6 +451,86 @@ async def test_start_anyway_draws_without_wishlists_and_tells_everyone():
     refused = Ctx()
     await SecretSantaCog.start.callback(cog, refused, "please")
     assert "s!start anyway" in refused.sent[-1]
+
+
+async def test_start_anyway_still_draws_when_the_word_is_not_exact():
+    """A copied mark or a trailing period must not turn the override back into a plain start."""
+    import discord
+    from discord.ext import commands
+
+    from cogs.secret_santa import SecretSantaCog
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    ready_participant(svc, "guild", "a", "Ada")
+    assert svc.join("guild", "b", "Bea").ok
+    assert svc.set_text_field("guild", "b", "address", "2 Bea Road", False).ok
+    assert svc.join("guild", "c", "Cara").ok
+    assert svc.update_profile("guild", "c", digital_only=True).ok
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def _dm_assignment(self, note):
+            return True
+
+        async def _dm_card(self, user_id, card, reply_as=None, view=None):
+            return True
+
+    class Ctx:
+        def __init__(self, guild_id, content):
+            self.guild = SimpleNamespace(id=guild_id)
+            self.author = SimpleNamespace(
+                id="org",
+                guild_permissions=SimpleNamespace(administrator=True),
+            )
+            self.interaction = None
+            self.message = SimpleNamespace(content=content, attachments=[])
+            self.sent = []
+
+        async def send(self, content=None, **kwargs):
+            del kwargs
+            self.sent.append(content)
+
+    probe = commands.Bot(
+        command_prefix=commands.when_mentioned_or("s!", "S!"),
+        case_insensitive=True,
+        strip_after_prefix=True,
+        intents=discord.Intents.default(),
+    )
+    probe._connection.user = SimpleNamespace(id=1)
+    probe.add_command(SecretSantaCog.start)
+
+    class Msg:
+        def __init__(self, content):
+            self.content = content
+            self.author = SimpleNamespace(id=9, bot=False)
+            self.attachments = []
+            self.guild = SimpleNamespace(id=1)
+            self._state = None
+
+    parsed = await probe.get_context(Msg("s!start `anyway`"))
+    await parsed.command._parse_arguments(parsed)
+    cog = Cog()
+    ctx = Ctx("guild", "s!start `anyway`")
+    await SecretSantaCog.start.callback(cog, ctx, parsed.args[-1])
+    assert database.get_open_event("guild")["phase"] == "drawn"
+    assert "Still missing a wishlist: Bea, Cara." in ctx.sent[-1]
+
+    svc.create_event("guild-2", "org", "Party")
+    ready_participant(svc, "guild-2", "a", "Ada")
+    assert svc.join("guild-2", "b", "Bea").ok
+    assert svc.set_text_field("guild-2", "b", "address", "2 Bea Road", False).ok
+    dotted = await probe.get_context(Msg("s!start anyway."))
+    await dotted.command._parse_arguments(dotted)
+    second = Ctx("guild-2", "s!start anyway.")
+    await SecretSantaCog.start.callback(cog, second, dotted.args[-1])
+    assert database.get_open_event("guild-2")["phase"] == "drawn"
+    assert "Still missing a wishlist: Bea." in second.sent[-1]
 
 
 def test_impossible_exclusions_do_not_save_pairings():

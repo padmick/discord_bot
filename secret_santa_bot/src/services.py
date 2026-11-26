@@ -392,8 +392,19 @@ class EventService:
         ]
         blocking = missing
         if allow_missing_wishlist:
-            blocking = [person for person in missing if "address" in person["missing"]]
+            blocking = [
+                {**person, "missing": ["address"]}
+                for person in missing
+                if "address" in person["missing"]
+            ]
         if blocking:
+            if allow_missing_wishlist:
+                return failure(
+                    "missing_info",
+                    "Cannot start. Some participants still need an address. "
+                    "A missing wishlist does not block this draw.",
+                    missing=blocking,
+                )
             return failure(
                 "missing_info",
                 "Cannot start. Some participants still need a wishlist or address.",
