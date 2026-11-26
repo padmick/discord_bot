@@ -119,7 +119,7 @@ Participants:
 1. An organizer creates the event with `s!create` and follows the setup guide. `s!announce #channel` tells that channel how to join.
 2. Participants join, get a DM explaining the event, and fill in a wishlist. The first time they join, the tutorial arrives too. A shipping address is required unless the gift is digital.
 3. Optional: set the last day to join with `s!signupby`, lock signup, set a gift deadline, copy last year's locks with `s!carrylocks`, skip past matches, and set reminder timing with `s!settings`.
-4. `s!start` writes a draw only when every profile is complete and a valid derangement exists.
+4. `s!start` writes a draw only when every profile is complete and a valid derangement exists. `s!start anyway` draws when wishlists are still empty, then DMs the organizer and every participant, including anyone who still needs a wishlist. An address is still required unless the gift is digital.
 5. Each person is DMed their recipient. The organizer does not receive the full list.
 6. Pairs can message anonymously and mark the gift bought, shipped, and received.
 7. `s!finish` archives the event. `s!cancel` deletes the open event in that server only.

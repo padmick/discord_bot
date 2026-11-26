@@ -175,6 +175,7 @@ def guide_fields() -> tuple[Field, ...]:
         Field(
             "The draw",
             "When every profile is complete, the organizer runs `s!start`. "
+            "`s!start anyway` draws even if a wishlist is still empty, then tells everyone who needs one. "
             "You are assigned one person, and someone else is assigned you. "
             "Nobody is assigned to themselves, and you are not told who is buying for you.\n"
             "The match arrives by DM. `s!match` sends it again.",
@@ -454,6 +455,21 @@ def profile_reminder_card(missing: list[str]) -> Card:
     )
 
 
+def draw_without_wishlists_card(names: list[object]) -> Card:
+    who = _name_list(names)
+    return Card(
+        title="The draw started without every wishlist",
+        description=f"Matches are out. {who} still need a wishlist.",
+        fields=(
+            Field(
+                "How to add it",
+                "Use `/profile` or `s!setwishlist`. Your giver is told when the wishlist changes.",
+            ),
+        ),
+        footer="Until then, the match says no wishlist is set.",
+    )
+
+
 def draw_waiting_card(missing: list[str]) -> Card:
     needed = ", ".join(label(item, "profile") for item in missing) or "profile"
     return Card(
@@ -512,7 +528,8 @@ TUTORIAL_PAGES: tuple[tuple[str, str], ...] = (
     ),
     (
         "The draw",
-        "When every profile is complete, the organizer runs `s!start`.\n"
+        "When every profile is complete, the organizer runs `s!start`. "
+        "`s!start anyway` draws even if a wishlist is still empty and tells everyone who needs one.\n"
         "You are assigned one person, and someone else is assigned you. "
         "You are not told who is buying for you. The match arrives by DM. `s!match` sends it again.",
     ),
