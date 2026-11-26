@@ -71,7 +71,7 @@ The process listens on `0.0.0.0:8080`. `/` and `/health` return 200 when the dat
 Server management (organizer or a server admin):
 
 - `s!create [name]` - Create an event and open the setup guide. The organizer is not enrolled.
-- `s!setup` - Open that guide again: signup date, gift deadline, spending cap, and rules.
+- `s!setup` - Open that guide again: signup date, gift deadline, spending cap, and rules. The form shows the saved lines and writes only the ones you change. Block a match on that guide locks two people the same private way as `s!block`.
 - `s!announce #channel` - Post in that channel that signup is open and how to join. The setup guide has the same channel menu.
 - `s!lock` / `s!unlock` - Close or reopen signup.
 - `s!deadline YYYY-MM-DD` - Set the gift deadline.
@@ -83,7 +83,7 @@ Server management (organizer or a server admin):
 - `s!finish` - Archive a drawn event so another can be created.
 - `s!cancel` - Delete this server's open event.
 - `s!remove @member` - Remove someone. After the draw, the seat is redrawn.
-- `s!block @person @person` - Keep two people from being matched. The names are sent by DM, the command message is removed, and the channel only says a DM was sent. They cannot remove this. If the draw already paired them, it changes as few matches as it can. `s!unblock` removes the lock. `s!blocks` DMs the list.
+- `s!block @person @person` - Keep two people from being matched. The names are sent by DM, the command message is removed, and the channel only says a DM was sent. The setup guide's Block a match button does the same thing. They cannot remove this. If the draw already paired them, it changes as few matches as it can. `s!unblock` removes the lock. `s!blocks` DMs the list.
 - `s!cap <text>` - Set a spending cap for the event. It shows on a match when that person has not set their own. `s!cap clear` removes it.
 - `s!rules <text>` - Add a short note to the welcome DM and the match. `s!rules clear` removes it.
 - `s!settings` - Choose profile and shipping reminders, the days between them, and how early shipping reminders start.

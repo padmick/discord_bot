@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import date, datetime
 
 import discord
 
 from present import to_embed, tutorial_card, tutorial_page_count, tutorial_page_from_footer
-from utils import report_failure
+from utils import log_event, report_failure
 
 
 async def report_component_failure(component: str, interaction, error: BaseException) -> None:
@@ -632,27 +633,45 @@ class NotificationSettingsView(discord.ui.View):
         await report_component_failure(f"notification settings guild {self.guild_id}", interaction, error)
 
 
+def _form_default(value, *, day: bool = False) -> str | None:
+    if value is None or value == "":
+        return None
+    if day:
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        text = str(value).strip()
+        return text or None
+    text = " ".join(str(value).split())
+    return text or None
+
+
 class SetupModal(discord.ui.Modal, title="Event setup"):
-    def __init__(self, cog, guild_id: str, user_id: str):
+    def __init__(self, cog, guild_id: str, user_id: str, event: dict | None = None):
         super().__init__()
         self.cog = cog
         self.guild_id = str(guild_id)
         self.user_id = str(user_id)
+        current = event or {}
         self.signup = discord.ui.TextInput(
             label="Last day to join",
             placeholder="2026-12-01, or clear",
+            default=_form_default(current.get("signup_deadline"), day=True),
             required=False,
             max_length=20,
         )
         self.deadline = discord.ui.TextInput(
             label="Gift deadline",
             placeholder="2026-12-20, or clear",
+            default=_form_default(current.get("deadline"), day=True),
             required=False,
             max_length=20,
         )
         self.cap = discord.ui.TextInput(
             label="Spending cap",
             placeholder="$25, or clear",
+            default=_form_default(current.get("spending_cap")),
             required=False,
             max_length=80,
         )
@@ -660,6 +679,7 @@ class SetupModal(discord.ui.Modal, title="Event setup"):
             label="Rules note",
             style=discord.TextStyle.paragraph,
             placeholder="Handmade gifts, or clear",
+            default=_form_default(current.get("rules")),
             required=False,
             max_length=500,
         )
@@ -749,11 +769,160 @@ class SetupButton(
                     ephemeral=True,
                 )
                 return
-            await interaction.response.send_modal(SetupModal(cog, self.guild_id, self.user_id))
+            overview = await cog.run(
+                cog.service.setup_overview,
+                self.guild_id,
+                str(interaction.user.id),
+                _interaction_is_admin(interaction),
+            )
+            if not overview.ok:
+                await interaction.response.send_message(overview.message, ephemeral=True)
+                return
+            event = (overview.data or {}).get("event") or {}
+            await interaction.response.send_modal(SetupModal(cog, self.guild_id, self.user_id, event))
         except discord.InteractionResponded:
             return
         except Exception as exc:
             await report_component_failure(f"setup button guild {self.guild_id}", interaction, exc)
+
+
+class SetupBlockButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"ss:blockbtn:(?P<guild_id>[0-9]+):(?P<user_id>[0-9]+)",
+):
+    """Opens a private pair picker. The server channel never sees the names."""
+
+    def __init__(self, guild_id: str, user_id: str):
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        super().__init__(
+            discord.ui.Button(
+                label="Block a match",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"ss:blockbtn:{self.guild_id}:{self.user_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        del interaction, item
+        return cls(match["guild_id"], match["user_id"])
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            if not await _first_dispatch(interaction):
+                return
+            if interaction.response.is_done():
+                return
+            if str(interaction.user.id) != self.user_id:
+                await interaction.response.send_message(
+                    "This guide belongs to the person who opened it.",
+                    ephemeral=True,
+                )
+                return
+            if _secret_santa_cog(interaction) is None:
+                await interaction.response.send_message(
+                    "Secret Santa is not available right now.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_message(
+                "Choose two people who should not be matched. Their names stay in your DMs.",
+                view=SetupBlockPickView(self.guild_id, self.user_id),
+                ephemeral=True,
+            )
+        except discord.InteractionResponded:
+            return
+        except Exception as exc:
+            await report_component_failure(f"block button guild {self.guild_id}", interaction, exc)
+
+
+class SetupBlockSelect(
+    discord.ui.DynamicItem[discord.ui.UserSelect],
+    template=r"ss:blockpick:(?P<guild_id>[0-9]+):(?P<user_id>[0-9]+)",
+):
+    """Locks a pair from the private picker, including after a restart."""
+
+    def __init__(self, guild_id: str, user_id: str):
+        self.guild_id = str(guild_id)
+        self.user_id = str(user_id)
+        super().__init__(
+            discord.ui.UserSelect(
+                placeholder="Two people who should not be matched",
+                min_values=2,
+                max_values=2,
+                custom_id=f"ss:blockpick:{self.guild_id}:{self.user_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        del interaction, item
+        return cls(match["guild_id"], match["user_id"])
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            if not await _first_dispatch(interaction):
+                return
+            if interaction.response.is_done():
+                return
+            if str(interaction.user.id) != self.user_id:
+                await interaction.response.send_message(
+                    "This guide belongs to the person who opened it.",
+                    ephemeral=True,
+                )
+                return
+            cog = _secret_santa_cog(interaction)
+            if cog is None:
+                await interaction.response.send_message(
+                    "Secret Santa is not available right now.",
+                    ephemeral=True,
+                )
+                return
+            chosen = list(self.item.values or [])
+            if len(chosen) != 2 or any(getattr(person, "bot", False) for person in chosen):
+                await interaction.response.send_message(
+                    "Pick two people. Bots are not in the draw.",
+                    ephemeral=True,
+                )
+                return
+            first, second = chosen
+            await interaction.response.defer(ephemeral=True)
+            result = await cog.run(
+                cog.service.block_pair,
+                self.guild_id,
+                str(interaction.user.id),
+                _interaction_is_admin(interaction),
+                str(first.id),
+                getattr(first, "display_name", None) or "Someone",
+                str(second.id),
+                getattr(second, "display_name", None) or "Someone",
+            )
+            for note in (result.data or {}).get("changed") or []:
+                sender = getattr(cog, "_dm_assignment", None)
+                if sender is not None:
+                    await sender(note)
+            if result.ok:
+                log_event("BLOCK", f"guild {self.guild_id} user {interaction.user.id}")
+            try:
+                await interaction.user.send(result.message)
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "I couldn't DM you. Allow DMs from server members.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.followup.send("**Sent in a DM.**", ephemeral=True)
+        except discord.InteractionResponded:
+            return
+        except Exception as exc:
+            await report_component_failure(f"block picker guild {self.guild_id}", interaction, exc)
+
+
+class SetupBlockPickView(discord.ui.View):
+    def __init__(self, guild_id: str, user_id: str):
+        super().__init__(timeout=None)
+        self.add_item(SetupBlockSelect(guild_id, user_id))
 
 
 class AnnounceChannelPicker(
@@ -827,6 +996,7 @@ class SetupView(discord.ui.View):
         self.user_id = str(user_id)
         self.add_item(AnnounceChannelPicker(self.guild_id, self.user_id))
         self.add_item(SetupButton(self.guild_id, self.user_id))
+        self.add_item(SetupBlockButton(self.guild_id, self.user_id))
 
 
 async def _resolve_text_channel(interaction, selected):

@@ -223,7 +223,7 @@ class EventService:
         if isinstance(event, Result):
             return event
         card = setup_card(event)
-        return success(card.text(), card=card)
+        return success(card.text(), card=card, event=event)
 
     def apply_setup(
         self,
@@ -242,45 +242,58 @@ class EventService:
         deadline_text = (deadline or "").strip()
         cap_text = (cap or "").strip()
         rules_text = (rules or "").strip()
+        unchanged = success(
+            "Nothing changed. Fill in a line to set it, or type clear to remove it.",
+            card=setup_card(event),
+        )
         if not any((signup_text, deadline_text, cap_text, rules_text)):
-            return success(
-                "Nothing changed. Fill in a line to set it, or type clear to remove it.",
-                card=setup_card(event),
-            )
+            return unchanged
         fields: dict[str, Any] = {}
         parsed_signup = None
         if signup_text:
             if signup_text.lower() == "clear":
-                fields["signup_deadline"] = None
+                if event.get("signup_deadline") is not None:
+                    fields["signup_deadline"] = None
             else:
                 parsed_signup = _parse_day(signup_text)
                 if parsed_signup is None:
                     return failure("bad_date", "Use a signup date like 2026-12-01, or clear.")
-                fields["signup_deadline"] = parsed_signup
+                if _current_day(event.get("signup_deadline")) != parsed_signup:
+                    fields["signup_deadline"] = parsed_signup
+                else:
+                    parsed_signup = None
         if deadline_text:
             if deadline_text.lower() == "clear":
-                fields["deadline"] = None
+                if event.get("deadline") is not None:
+                    fields["deadline"] = None
             else:
                 parsed_deadline = _parse_day(deadline_text)
                 if parsed_deadline is None:
                     return failure("bad_date", "Use a gift deadline like 2026-12-20, or clear.")
-                fields["deadline"] = parsed_deadline
+                if _current_day(event.get("deadline")) != parsed_deadline:
+                    fields["deadline"] = parsed_deadline
         if cap_text:
             if cap_text.lower() == "clear":
-                fields["spending_cap"] = None
+                if event.get("spending_cap") is not None:
+                    fields["spending_cap"] = None
             else:
                 cleaned_cap = " ".join(cap_text.split())
                 if len(cleaned_cap) > 80:
                     return failure("too_long", "Keep the spending cap under 80 characters.")
-                fields["spending_cap"] = cleaned_cap
+                if _current_copy(event.get("spending_cap")) != cleaned_cap:
+                    fields["spending_cap"] = cleaned_cap
         if rules_text:
             if rules_text.lower() == "clear":
-                fields["rules"] = None
+                if event.get("rules") is not None:
+                    fields["rules"] = None
             else:
                 cleaned_rules = " ".join(rules_text.split())
                 if len(cleaned_rules) > 500:
                     return failure("too_long", "Keep the rules note under 500 characters.")
-                fields["rules"] = cleaned_rules
+                if _current_copy(event.get("rules")) != cleaned_rules:
+                    fields["rules"] = cleaned_rules
+        if not fields:
+            return unchanged
         closed_now = (
             parsed_signup is not None and event["phase"] == SIGNUP and date.today() > parsed_signup
         )
@@ -1294,6 +1307,22 @@ def _parse_day(day: str) -> date | None:
         return datetime.strptime(day.strip(), "%Y-%m-%d").date()
     except (TypeError, ValueError):
         return None
+
+
+def _current_day(value: Any) -> date | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return _parse_day(str(value))
+
+
+def _current_copy(value: Any) -> str:
+    if value is None:
+        return ""
+    return " ".join(str(value).split())
 
 
 def _lock_phrase(locks: list[tuple[str, str, str, str]]) -> str:

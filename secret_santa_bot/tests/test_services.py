@@ -1135,6 +1135,58 @@ def test_setup_saves_dates_and_the_announcement_hides_matches():
     assert svc.claim_tip("11", "seen-join-tutorial") is False
 
 
+def test_setup_keeps_fields_the_organizer_did_not_change():
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    today = date.today().isoformat()
+    saved = svc.apply_setup(
+        "guild",
+        "org",
+        False,
+        signup=today,
+        deadline="2026-12-20",
+        cap="$25",
+        rules="Handmade only",
+    )
+    assert saved.ok
+    same = svc.apply_setup(
+        "guild",
+        "org",
+        False,
+        signup=today,
+        deadline="2026-12-20",
+        cap="  $25 ",
+        rules="Handmade   only",
+    )
+    assert "Nothing changed" in same.message
+    only_rules = svc.apply_setup(
+        "guild",
+        "org",
+        False,
+        signup=today,
+        deadline="2026-12-20",
+        cap="$25",
+        rules="No food",
+    )
+    assert only_rules.ok
+    event = database.get_open_event("guild")
+    assert event["phase"] == "signup"
+    assert event["signup_deadline"] == date.today()
+    assert event["deadline"].isoformat() == "2026-12-20"
+    assert event["spending_cap"] == "$25"
+    assert event["rules"] == "No food"
+    cleared = svc.apply_setup("guild", "org", False, cap="clear", rules="No food")
+    assert cleared.ok
+    event = database.get_open_event("guild")
+    assert event["spending_cap"] is None
+    assert event["rules"] == "No food"
+    assert event["signup_deadline"] == date.today()
+    assert event["deadline"].isoformat() == "2026-12-20"
+    again = svc.apply_setup("guild", "org", False, cap="clear")
+    assert "Nothing changed" in again.message
+    assert database.get_open_event("guild")["rules"] == "No food"
+
+
 def test_signup_date_closes_joining_and_leaves_the_gift_deadline():
     svc, database = service()
     svc.create_event("guild", "org", "Party")
@@ -1277,6 +1329,28 @@ async def test_setup_form_and_channel_menu_post_the_welcome():
     assert stored["rules"] == "Handmade only"
     assert "Setup saved" in submitted.followup.messages[-1][0]
 
+    reopened = SimpleNamespace(
+        user=SimpleNamespace(id=2),
+        response=Response(),
+        followup=Followup(),
+        guild=None,
+        client=client,
+    )
+    await button.callback(reopened)
+    filled = reopened.response.modals[0]
+    assert filled.signup.value == date.today().isoformat()
+    assert filled.deadline.value == "2026-12-20"
+    assert filled.cap.value == "$25"
+    assert filled.rules.value == "Handmade only"
+    untouched = SimpleNamespace(user=SimpleNamespace(id=2), response=Response(), followup=Followup(), guild=None)
+    await filled.on_submit(untouched)
+    assert "Nothing changed" in untouched.followup.messages[-1][0]
+    stored = database.get_open_event("1")
+    assert stored["spending_cap"] == "$25"
+    assert stored["rules"] == "Handmade only"
+    assert stored["signup_deadline"] == date.today()
+    assert stored["deadline"].isoformat() == "2026-12-20"
+
     channel = Channel(555)
     guild = SimpleNamespace(get_channel=lambda channel_id: channel if int(channel_id) == 555 else None)
 
@@ -1326,6 +1400,15 @@ async def test_setup_form_and_channel_menu_post_the_welcome():
     await select.callback(refused)
     assert "can't post" in refused.followup.messages[-1][0]
 
+    filled.cap._value = "$40"
+    changed = SimpleNamespace(user=SimpleNamespace(id=2), response=Response(), followup=Followup(), guild=None)
+    await filled.on_submit(changed)
+    stored = database.get_open_event("1")
+    assert stored["spending_cap"] == "$40"
+    assert stored["rules"] == "Handmade only"
+    assert stored["signup_deadline"] == date.today()
+    assert stored["deadline"].isoformat() == "2026-12-20"
+
 
 async def test_setup_button_answers_after_the_sending_view_is_gone():
     """The form still opens when Discord delivers the click to a new process."""
@@ -1358,10 +1441,28 @@ async def test_setup_button_answers_after_the_sending_view_is_gone():
             self.modals.append(modal)
             self.done = True
 
+    class Cog:
+        service = SimpleNamespace(setup_overview=None)
+
+        async def run(self, func, *args, **kwargs):
+            del func, args, kwargs
+            return SimpleNamespace(
+                ok=True,
+                message="ok",
+                data={
+                    "event": {
+                        "signup_deadline": date(2026, 12, 1),
+                        "deadline": None,
+                        "spending_cap": "$25",
+                        "rules": "Handmade only",
+                    }
+                },
+            )
+
     class Client:
         def get_cog(self, name):
             assert name == "SecretSantaCog"
-            return SimpleNamespace(name=name)
+            return Cog()
 
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=7),
@@ -1382,6 +1483,189 @@ async def test_setup_button_answers_after_the_sending_view_is_gone():
     assert len(interaction.response.modals) == 1
     assert interaction.response.modals[0].guild_id == "42"
     assert interaction.response.modals[0].user_id == "7"
+    assert interaction.response.modals[0].signup.value == "2026-12-01"
+    assert interaction.response.modals[0].cap.value == "$25"
+    assert interaction.response.modals[0].rules.value == "Handmade only"
+    assert interaction.response.modals[0].deadline.value == ""
+
+
+async def test_setup_block_button_keeps_the_pair_out_of_the_channel():
+    import discord
+    from discord.components import ActionRow
+    from discord.ui.view import ViewStore
+
+    from views import SetupBlockButton, SetupBlockSelect, SetupView
+
+    svc, database = service()
+    svc.create_event("1", "2", "Party")
+    for user_id, name in (("11", "Ada"), ("22", "Bea"), ("33", "Cara"), ("44", "Dee")):
+        ready_participant(svc, "1", user_id, name)
+
+    class Person:
+        def __init__(self, user_id, name, bot=False):
+            self.id = user_id
+            self.display_name = name
+            self.bot = bot
+            self.inbox = []
+            self.fail = False
+
+        async def send(self, content=None, **kwargs):
+            del kwargs
+            if self.fail:
+                raise discord.Forbidden(SimpleNamespace(status=403, reason="missing"), "no")
+            self.inbox.append(content)
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+            self.notes = []
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def _dm_assignment(self, note):
+            self.notes.append(note)
+
+    class Response:
+        def __init__(self):
+            self.done = False
+            self.messages = []
+            self.views = []
+            self.ephemeral = []
+
+        def is_done(self):
+            return self.done
+
+        async def defer(self, ephemeral=False):
+            self.ephemeral.append(ephemeral)
+            self.done = True
+
+        async def send_message(self, message, ephemeral=False, view=None):
+            self.messages.append(message)
+            self.views.append(view)
+            self.ephemeral.append(ephemeral)
+            self.done = True
+
+    class Followup:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message, ephemeral=False, embed=None):
+            del embed
+            self.messages.append((message, ephemeral))
+
+    cog = Cog()
+
+    class Client:
+        def get_cog(self, name):
+            assert name == "SecretSantaCog"
+            return cog
+
+    organizer = Person(2, "Organizer")
+    view = SetupView("1", "2")
+    button = next(item for item in view.children if isinstance(item, SetupBlockButton))
+    rows = [ActionRow(row) for row in view.to_components()]
+    opener = SimpleNamespace(
+        id=9001,
+        user=organizer,
+        response=Response(),
+        followup=Followup(),
+        guild=SimpleNamespace(id=1),
+        client=Client(),
+        message=SimpleNamespace(id=99, components=rows),
+        data={"custom_id": button.custom_id, "component_type": discord.ComponentType.button.value},
+    )
+    store = ViewStore(SimpleNamespace())
+    store.add_dynamic_items(SetupBlockButton, SetupBlockSelect)
+    await store.schedule_dynamic_item_call(
+        discord.ComponentType.button.value,
+        SetupBlockButton,
+        opener,
+        button.custom_id,
+        button.template.fullmatch(button.custom_id),
+    )
+    prompt = opener.response.messages[0]
+    assert opener.response.ephemeral[0] is True
+    assert "Ada" not in prompt and "Bea" not in prompt
+    picker = opener.response.views[0]
+    select = next(item for item in picker.children if isinstance(item, SetupBlockSelect))
+    select.item._values = [Person(11, "Ada"), Person(22, "Bea")]
+    picked = SimpleNamespace(
+        user=organizer,
+        response=Response(),
+        followup=Followup(),
+        guild=SimpleNamespace(id=1),
+        client=Client(),
+    )
+    await select.callback(picked)
+    event_id = database.get_open_event("1")["id"]
+    assert ("11", "22") in database.list_exclusions(event_id)
+    assert any("Ada" in text and "Bea" in text for text in organizer.inbox)
+    assert picked.followup.messages[-1] == ("**Sent in a DM.**", True)
+    for message, _ephemeral in picked.followup.messages:
+        assert "Ada" not in message and "Bea" not in message
+    for message in opener.response.messages:
+        assert "Ada" not in message and "Bea" not in message
+
+    stranger = SimpleNamespace(
+        user=Person(11, "Ada"),
+        response=Response(),
+        followup=Followup(),
+        guild=SimpleNamespace(id=1),
+        client=Client(),
+    )
+    await select.callback(stranger)
+    assert "belongs to the person" in stranger.response.messages[0]
+    assert "Ada" not in stranger.response.messages[0]
+
+    bots = SimpleNamespace(
+        user=organizer,
+        response=Response(),
+        followup=Followup(),
+        guild=SimpleNamespace(id=1),
+        client=Client(),
+    )
+    select.item._values = [Person(11, "Ada", bot=True), Person(33, "Cara")]
+    await select.callback(bots)
+    assert "Bots are not in the draw" in bots.response.messages[0]
+    assert ("11", "33") not in database.list_exclusions(event_id)
+
+    organizer.fail = True
+    missed = SimpleNamespace(
+        user=organizer,
+        response=Response(),
+        followup=Followup(),
+        guild=SimpleNamespace(id=1),
+        client=Client(),
+    )
+    select.item._values = [Person(33, "Cara"), Person(44, "Dee")]
+    await select.callback(missed)
+    assert ("33", "44") in database.list_exclusions(event_id)
+    assert missed.followup.messages[-1][0] == "I couldn't DM you. Allow DMs from server members."
+    assert missed.followup.messages[-1][1] is True
+    assert "Cara" not in missed.followup.messages[-1][0]
+    assert "Dee" not in missed.followup.messages[-1][0]
+
+    assert svc.start("1", "2", False).ok
+    pairs = {row["giver_id"]: row["receiver_id"] for row in database.list_pairings(event_id)}
+    giver, receiver = next(iter(pairs.items()))
+    names = {"11": "Ada", "22": "Bea", "33": "Cara", "44": "Dee"}
+    moved = SimpleNamespace(
+        user=organizer,
+        response=Response(),
+        followup=Followup(),
+        guild=SimpleNamespace(id=1),
+        client=Client(),
+    )
+    organizer.fail = False
+    before = len(organizer.inbox)
+    select.item._values = [Person(giver, names[giver]), Person(receiver, names[receiver])]
+    await select.callback(moved)
+    assert cog.notes
+    assert moved.followup.messages[-1] == ("**Sent in a DM.**", True)
+    for message, _ephemeral in moved.followup.messages:
+        assert names[giver] not in message and names[receiver] not in message
+    assert any(names[giver] in text and names[receiver] in text for text in organizer.inbox[before:])
 
 
 async def test_past_partner_menu_skips_only_the_people_you_choose():
