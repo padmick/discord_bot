@@ -212,6 +212,9 @@ def test_profile_match_and_status_keep_private_text_in_the_right_card():
     assert "Set up Party" in guide.title
     assert "Created." in guide.text()
     assert "Not posted yet" in guide.text()
+    assert "only a line you change" in guide.text()
+    assert "Block a match" in guide.text()
+    assert "leave unchanged" in guide.footer
     opened = open_announcement_card(
         {"name": "Party", "signup_deadline": None, "deadline": "2026-12-20", "spending_cap": None, "rules": "Handmade"}
     )

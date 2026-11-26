@@ -721,6 +721,8 @@ def setup_card(event: dict, intro: str = "") -> Card:
     name = label(event.get("name"), "Secret Santa")
     guidance = (
         "Set the signup date and gift deadline, then a spending cap and rules if you want them. "
+        "The form shows what is already saved, and only a line you change is written. "
+        "Block a match keeps two people apart. Their names are sent by DM, not in this channel.\n"
         "Then pick a channel below, or use `s!announce`, so people know how to join.\n"
         "You are not in the draw until you join. "
         "`s!help` lists commands. `s!tutorial` walks through them. `s!hint` shows a hint again."
@@ -738,7 +740,7 @@ def setup_card(event: dict, intro: str = "") -> Card:
             Field("Rules", shown(event.get("rules"), "Not set")),
             Field("Announcement", announced),
         ),
-        footer="Blank form fields stay as they are. Type clear to remove one.",
+        footer="A line you leave unchanged stays as it is. Type clear to remove one.",
     )
 
 

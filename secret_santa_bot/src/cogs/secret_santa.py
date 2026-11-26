@@ -52,6 +52,8 @@ from views import (
     ProfileWindowButton,
     ReplyView,
     SettingsEditButton,
+    SetupBlockButton,
+    SetupBlockSelect,
     SetupButton,
     SetupView,
     TutorialView,
@@ -104,6 +106,8 @@ class SecretSantaCog(commands.Cog):
         self.bot.add_view(TutorialView(0))
         self.bot.add_dynamic_items(
             SetupButton,
+            SetupBlockButton,
+            SetupBlockSelect,
             AnnounceChannelPicker,
             ProfileEditButton,
             ProfileWindowButton,
@@ -118,6 +122,8 @@ class SecretSantaCog(commands.Cog):
         self.daily_reminders.cancel()
         self.bot.remove_dynamic_items(
             SetupButton,
+            SetupBlockButton,
+            SetupBlockSelect,
             AnnounceChannelPicker,
             ProfileEditButton,
             ProfileWindowButton,
