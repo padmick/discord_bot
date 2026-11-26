@@ -349,8 +349,11 @@ class SecretSantaCog(commands.Cog):
     @discord.app_commands.describe(anyway="Type anyway to draw without every wishlist")
     async def start(self, ctx, anyway: str = ""):
         """Draw matches and DM them."""
-        word = (anyway or "").strip().lower()
-        if word not in {"", "anyway"}:
+        content = getattr(getattr(ctx, "message", None), "content", "") or ""
+        requested = _wants_anyway(anyway)
+        if not requested and not (anyway or "").strip():
+            requested = _wants_anyway(content)
+        if (anyway or "").strip() and not requested:
             await _say(
                 ctx,
                 "Use `s!start` when every profile is ready, or `s!start anyway` to draw without every wishlist.",
@@ -361,7 +364,7 @@ class SecretSantaCog(commands.Cog):
             str(ctx.guild.id),
             str(ctx.author.id),
             _is_admin(ctx),
-            word == "anyway",
+            requested,
         )
         if not result.ok:
             await _show(ctx, result)
@@ -379,7 +382,7 @@ class SecretSantaCog(commands.Cog):
             for user_id in result.data.get("notice_user_ids") or []:
                 if not await self._dm_card(user_id, card):
                     notice_failed += 1
-        log_event("START", f"guild {ctx.guild.id} user {ctx.author.id}" + (" anyway" if word == "anyway" else ""))
+        log_event("START", f"guild {ctx.guild.id} user {ctx.author.id}" + (" anyway" if requested else ""))
         message = result.message
         if failed:
             message += f" {failed} participant(s) could not be reached by DM."
@@ -1136,6 +1139,19 @@ def _attached_image(ctx) -> str:
         if content_type.startswith("image/") or name.endswith((".gif", ".png", ".jpg", ".jpeg", ".webp")):
             return url
     return ""
+
+
+def _wants_anyway(text: str) -> bool:
+    """True when the organizer asked to draw without every wishlist.
+
+    The word is enough. A copied backtick, a period, or an exclamation mark
+    still counts. Anything else is not this override.
+    """
+    for piece in (text or "").replace("\n", " ").split():
+        word = piece.strip().lower().strip("`\"'“”.,!?:;()[]")
+        if word == "anyway":
+            return True
+    return False
 
 
 def _is_admin(ctx) -> bool:
