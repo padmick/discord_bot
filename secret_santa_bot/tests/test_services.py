@@ -378,6 +378,76 @@ def test_physical_gift_still_requires_an_address():
     assert result.code == "missing_info"
     assert database.replace_calls == 0
     assert any("address" in person["missing"] for person in result.data["missing"])
+    forced = svc.start("guild", "org", False, True)
+    assert forced.code == "missing_info"
+    assert database.get_open_event("guild")["phase"] == "signup"
+
+
+async def test_start_anyway_draws_without_wishlists_and_tells_everyone():
+    from cogs.secret_santa import SecretSantaCog
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+    ready_participant(svc, "guild", "a", "Ada")
+    assert svc.join("guild", "b", "Bea").ok
+    assert svc.set_text_field("guild", "b", "address", "2 Bea Road", False).ok
+    assert svc.join("guild", "c", "Cara").ok
+    assert svc.set_text_field("guild", "c", "address", "3 Cara Road", False).ok
+
+    class Cog:
+        def __init__(self):
+            self.service = svc
+            self.cards = []
+
+        async def run(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def _dm_assignment(self, note):
+            self.cards.append(("match", note["giver_id"]))
+            return True
+
+        async def _dm_card(self, user_id, card, reply_as=None, view=None):
+            self.cards.append(("notice", str(user_id), card.title, card.text()))
+            return True
+
+    class Ctx:
+        def __init__(self):
+            self.guild = SimpleNamespace(id="guild")
+            self.author = SimpleNamespace(
+                id="org",
+                guild_permissions=SimpleNamespace(administrator=True),
+            )
+            self.interaction = None
+            self.sent = []
+
+        async def send(self, content=None, **kwargs):
+            del kwargs
+            self.sent.append(content)
+
+    cog = Cog()
+    ctx = Ctx()
+    await SecretSantaCog.start.callback(cog, ctx)
+    assert database.get_open_event("guild")["phase"] == "signup"
+    assert any("Cannot start" in (text or "") for text in ctx.sent)
+    waiting = [item for item in cog.cards if item[0] == "notice"]
+    assert {item[1] for item in waiting} == {"b", "c"}
+    assert waiting[0][2] == "The draw is waiting on you"
+
+    cog.cards.clear()
+    ctx.sent.clear()
+    await SecretSantaCog.start.callback(cog, ctx, " anyway ")
+    assert database.get_open_event("guild")["phase"] == "drawn"
+    assert {item[1] for item in cog.cards if item[0] == "match"} == {"a", "b", "c"}
+    notices = [item for item in cog.cards if item[0] == "notice"]
+    assert [item[1] for item in notices] == ["org", "a", "b", "c"]
+    assert all(item[2] == "The draw started without every wishlist" for item in notices)
+    assert "Bea" in notices[0][3] and "Cara" in notices[0][3]
+    assert "Ada" not in notices[0][3]
+    assert "Still missing a wishlist: Bea, Cara." in ctx.sent[-1]
+
+    refused = Ctx()
+    await SecretSantaCog.start.callback(cog, refused, "please")
+    assert "s!start anyway" in refused.sent[-1]
 
 
 def test_impossible_exclusions_do_not_save_pairings():

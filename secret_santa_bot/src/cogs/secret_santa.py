@@ -18,6 +18,7 @@ from present import (
     tutorial_card,
     command_help_card,
     draw_waiting_card,
+    draw_without_wishlists_card,
     help_card,
     info_card,
     match_card,
@@ -331,11 +332,31 @@ class SecretSantaCog(commands.Cog):
         )
         await _show(ctx, result)
 
-    @commands.hybrid_command(name="start", help="Draw matches and DM them")
+    @commands.hybrid_command(
+        name="start",
+        help=(
+            "Draw matches and DM them\n"
+            "s!start anyway draws without every wishlist and tells the organizer and every participant."
+        ),
+    )
     @commands.guild_only()
-    async def start(self, ctx):
+    @discord.app_commands.describe(anyway="Type anyway to draw without every wishlist")
+    async def start(self, ctx, anyway: str = ""):
         """Draw matches and DM them."""
-        result = await self.run(self.service.start, str(ctx.guild.id), str(ctx.author.id), _is_admin(ctx))
+        word = (anyway or "").strip().lower()
+        if word not in {"", "anyway"}:
+            await _say(
+                ctx,
+                "Use `s!start` when every profile is ready, or `s!start anyway` to draw without every wishlist.",
+            )
+            return
+        result = await self.run(
+            self.service.start,
+            str(ctx.guild.id),
+            str(ctx.author.id),
+            _is_admin(ctx),
+            word == "anyway",
+        )
         if not result.ok:
             await _show(ctx, result)
             for person in (result.data or {}).get("missing", []):
@@ -345,10 +366,19 @@ class SecretSantaCog(commands.Cog):
         for note in result.data["notifications"]:
             if not await self._dm_assignment(note):
                 failed += 1
-        log_event("START", f"guild {ctx.guild.id} user {ctx.author.id}")
+        notice_failed = 0
+        missing_wishlist = (result.data or {}).get("missing_wishlist") or []
+        if missing_wishlist:
+            card = draw_without_wishlists_card([person["name"] for person in missing_wishlist])
+            for user_id in result.data.get("notice_user_ids") or []:
+                if not await self._dm_card(user_id, card):
+                    notice_failed += 1
+        log_event("START", f"guild {ctx.guild.id} user {ctx.author.id}" + (" anyway" if word == "anyway" else ""))
         message = result.message
         if failed:
             message += f" {failed} participant(s) could not be reached by DM."
+        if notice_failed:
+            message += f" {notice_failed} wishlist notice(s) could not be delivered by DM."
         await _say(ctx, message)
 
     @commands.hybrid_command(name="finish", help="Archive the event so a new one can be created")

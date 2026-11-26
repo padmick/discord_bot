@@ -376,7 +376,7 @@ class EventService:
         card = waiting_card(waiting)
         return success(card.text(), card=card, waiting=waiting)
 
-    def start(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
+    def start(self, guild_id: str, actor_id: str, is_admin: bool, allow_missing_wishlist: bool = False) -> Result:
         event = self._managed(guild_id, actor_id, is_admin)
         if isinstance(event, Result):
             return event
@@ -390,7 +390,10 @@ class EventService:
             for person in participants
             if missing_fields(person)
         ]
-        if missing:
+        blocking = missing
+        if allow_missing_wishlist:
+            blocking = [person for person in missing if "address" in person["missing"]]
+        if blocking:
             return failure(
                 "missing_info",
                 "Cannot start. Some participants still need a wishlist or address.",
@@ -406,11 +409,28 @@ class EventService:
         self._save_mapping(event["id"], mapping, previous={})
         self.db.update_event(event["id"], phase=DRAWN)
         profiles = {person["user_id"]: person for person in participants}
+        wishlist_missing = [person for person in missing if "wishlist" in person["missing"]]
+        message = "**Secret Santa has begun.** Participants received their matches by DM."
+        extra: dict[str, Any] = {}
+        if wishlist_missing:
+            names = ", ".join(label(person["name"], "Someone") for person in wishlist_missing)
+            message = (
+                "**Secret Santa has begun** without every wishlist. "
+                "Participants received their matches by DM. "
+                f"Still missing a wishlist: {names}."
+            )
+            notice_ids: list[str] = []
+            for user_id in [event["organizer_id"], *(person["user_id"] for person in participants)]:
+                user_id = str(user_id)
+                if user_id not in notice_ids:
+                    notice_ids.append(user_id)
+            extra = {"missing_wishlist": wishlist_missing, "notice_user_ids": notice_ids}
         return success(
-            "**Secret Santa has begun.** Participants received their matches by DM.",
+            message,
             notifications=[
                 self._notification(giver, receiver, profiles, event) for giver, receiver in mapping.items()
             ],
+            **extra,
         )
 
     def finish(self, guild_id: str, actor_id: str, is_admin: bool) -> Result:
