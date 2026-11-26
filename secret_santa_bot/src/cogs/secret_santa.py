@@ -465,10 +465,17 @@ class SecretSantaCog(commands.Cog):
         )
         await _show(ctx, result)
 
-    @commands.hybrid_command(name="block", help="Keep two people from being matched")
+    @commands.hybrid_command(
+        name="block",
+        help=(
+            "Keep two people from being matched\n"
+            "The names go to your DM. The server only sees that a DM was sent."
+        ),
+    )
     @commands.guild_only()
     async def block(self, ctx, first: discord.Member, second: discord.Member):
         """Keep two people from being matched."""
+        await _delete_invocation(ctx)
         if first.bot or second.bot:
             await _say(ctx, "Pick two people. Bots are not in the draw.")
             return
@@ -482,7 +489,7 @@ class SecretSantaCog(commands.Cog):
             str(second.id),
             second.display_name,
         )
-        await self._after_roster_change(ctx, result, "BLOCK")
+        await self._after_roster_change(ctx, result, "BLOCK", private=True)
 
     @commands.hybrid_command(name="carrylocks", help="Copy organizer locks from the last event")
     @commands.guild_only()
@@ -997,11 +1004,14 @@ class SecretSantaCog(commands.Cog):
         else:
             await respond("**Not delivered.** Their DMs are closed.")
 
-    async def _after_roster_change(self, ctx, result, action: str):
+    async def _after_roster_change(self, ctx, result, action: str, *, private: bool = False):
         for note in (result.data or {}).get("changed", []):
             await self._dm_assignment(note)
         if result.ok:
             log_event(action, f"guild {ctx.guild.id} user {ctx.author.id}")
+        if private:
+            await self._private(ctx, result.message, ephemeral=True)
+            return
         await _show(ctx, result)
 
     async def _personal_event(self, ctx):
@@ -1061,16 +1071,25 @@ class SecretSantaCog(commands.Cog):
         except discord.Forbidden:
             return False
 
-    async def _private(self, ctx, text: str, reply_as: str | None = None, card: Card | None = None):
+    async def _private(
+        self,
+        ctx,
+        text: str,
+        reply_as: str | None = None,
+        card: Card | None = None,
+        *,
+        ephemeral: bool = False,
+    ):
         if ctx.guild is None:
             await _deliver_private(ctx, text, reply_as, card)
             return
+        hide = ephemeral and getattr(ctx, "interaction", None) is not None
         try:
             await _deliver_private(ctx.author, text, reply_as, card)
         except discord.Forbidden:
-            await _say(ctx, "I couldn't DM you. Allow DMs from server members.")
+            await _say(ctx, "I couldn't DM you. Allow DMs from server members.", ephemeral=hide)
             return
-        await _say(ctx, "**Sent in a DM.**")
+        await _say(ctx, "**Sent in a DM.**", ephemeral=hide)
 
     async def _user(self, user_id: str):
         try:

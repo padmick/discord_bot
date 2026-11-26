@@ -1805,6 +1805,81 @@ def test_feedback_is_logged_and_the_changelog_shows_once(capsys):
     assert _private_command_message("lock") == "Run that command in the server."
 
 
+async def test_block_keeps_the_names_out_of_the_server_channel():
+    from cogs.secret_santa import SecretSantaCog
+
+    svc, database = service()
+    svc.create_event("guild", "org", "Party")
+
+    class Author:
+        def __init__(self):
+            self.id = "org"
+            self.guild_permissions = SimpleNamespace(administrator=True)
+            self.sent = []
+
+        async def send(self, content=None, **kwargs):
+            del kwargs
+            self.sent.append(content or "")
+
+    class Invocation:
+        def __init__(self):
+            self.deleted = False
+
+        async def delete(self):
+            self.deleted = True
+
+    class Ctx:
+        def __init__(self, interaction=None):
+            self.guild = SimpleNamespace(id="guild")
+            self.author = Author()
+            self.interaction = interaction
+            self.message = Invocation()
+            self.sent = []
+
+        async def send(self, content=None, **kwargs):
+            self.sent.append((content or "", kwargs))
+
+    cog = SecretSantaCog.__new__(SecretSantaCog)
+    cog.service = svc
+
+    async def run(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    async def _dm_assignment(note):
+        del note
+        return True
+
+    cog.run = run
+    cog._dm_assignment = _dm_assignment
+    ada = SimpleNamespace(id="11", display_name="Ada", bot=False)
+    bea = SimpleNamespace(id="22", display_name="Bea", bot=False)
+    ctx = Ctx()
+    await SecretSantaCog.block.callback(cog, ctx, ada, bea)
+    assert ctx.message.deleted is True
+    channel = " ".join(item[0] for item in ctx.sent)
+    assert channel == "**Sent in a DM.**"
+    assert "Ada" not in channel and "Bea" not in channel
+    assert ctx.sent[0][1].get("ephemeral") is not True
+    private = " ".join(ctx.author.sent)
+    assert "Ada" in private and "Bea" in private
+    assert "will not be matched" in private
+    event_id = database.get_open_event("guild")["id"]
+    assert ("11", "22") in database.list_exclusions(event_id)
+
+    slash = Ctx(interaction=SimpleNamespace())
+    await SecretSantaCog.block.callback(cog, slash, ada, bea)
+    assert slash.sent[0][0] == "**Sent in a DM.**"
+    assert slash.sent[0][1].get("ephemeral") is True
+    assert "Ada" not in slash.sent[0][0]
+
+    helper = SimpleNamespace(id="99", display_name="Helper", bot=True)
+    bots = Ctx()
+    await SecretSantaCog.block.callback(cog, bots, helper, bea)
+    assert bots.message.deleted is True
+    assert bots.sent[0][0] == "Pick two people. Bots are not in the draw."
+    assert "Helper" not in bots.sent[0][0]
+
+
 def test_rate_limiter_window_and_disabled_mode():
     limiter = RateLimiter(max_commands=2, window=10)
     assert limiter.check("user", 0) == (False, 0)

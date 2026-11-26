@@ -271,7 +271,11 @@ async def test_one_event_exercises_every_feature(db):
     assert "won't be paired" in picked.followup.messages[-1][0]
     await invoke(cog, SecretSantaCog.unexclude, ada, eve)
 
-    await invoke(cog, SecretSantaCog.block, org, ada, bea)
+    blocked_cmd = await invoke(cog, SecretSantaCog.block, org, ada, bea)
+    channel_text = plain(blocked_cmd.sent)
+    assert "Sent in a DM" in channel_text
+    assert "Ada" not in channel_text and "Bea" not in channel_text
+    assert "will not be matched" in inbox(org)
     locked = await invoke(cog, SecretSantaCog.blocks, org)
     assert "<@111>" in inbox(org) and "<@222>" in inbox(org)
     assert "Locked pairs" in plain(locked.sent) or "Locked pairs" in inbox(org)
