@@ -83,7 +83,7 @@ Server management (organizer or a server admin):
 - `s!finish` - Archive a drawn event so another can be created.
 - `s!cancel` - Delete this server's open event.
 - `s!remove @member` - Remove someone. After the draw, the seat is redrawn.
-- `s!block @person @person` - Keep two people from being matched. They cannot remove this. If the draw already paired them, it changes as few matches as it can. `s!unblock` removes the lock. `s!blocks` DMs the list.
+- `s!block @person @person` - Keep two people from being matched. The names are sent by DM, the command message is removed, and the channel only says a DM was sent. They cannot remove this. If the draw already paired them, it changes as few matches as it can. `s!unblock` removes the lock. `s!blocks` DMs the list.
 - `s!cap <text>` - Set a spending cap for the event. It shows on a match when that person has not set their own. `s!cap clear` removes it.
 - `s!rules <text>` - Add a short note to the welcome DM and the match. `s!rules clear` removes it.
 - `s!settings` - Choose profile and shipping reminders, the days between them, and how early shipping reminders start.
