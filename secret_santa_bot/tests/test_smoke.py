@@ -279,8 +279,18 @@ async def test_one_event_exercises_every_feature(db):
     locked = await invoke(cog, SecretSantaCog.blocks, org)
     assert "<@111>" in inbox(org) and "<@222>" in inbox(org)
     assert "Locked pairs" in plain(locked.sent) or "Locked pairs" in inbox(org)
+    before_org = len(org.sent)
+    before_ada = len(ada.sent)
     refused = await invoke(cog, SecretSantaCog.unexclude, ada, bea)
-    assert "organizer" in plain(refused.sent).lower()
+    refused_channel = plain(refused.sent)
+    assert "Sent in a DM" in refused_channel
+    assert "Ada" not in refused_channel and "Bea" not in refused_channel
+    ada_notice = plain(ada.sent[before_ada:])
+    assert "organizer" in ada_notice.lower()
+    assert "Bea" not in ada_notice
+    org_notice = plain(org.sent[before_org:])
+    assert "Ada" in org_notice and "Bea" in org_notice
+    assert "lock stays" in org_notice.lower()
 
     waiting = await invoke(cog, SecretSantaCog.status, ada)
     assert "Ada" in plain(waiting.sent) or "wishlist" in plain(waiting.sent).lower()
@@ -438,7 +448,12 @@ async def test_one_event_exercises_every_feature(db):
     assert "Anonymity is broken" in plain(revealed.sent) or "Anonymity is broken" in inbox(org)
     assert "Ada" in inbox(org)
 
-    await invoke(cog, SecretSantaCog.unblock, org, ada, bea)
+    before_unlock = len(org.sent)
+    unlocked = await invoke(cog, SecretSantaCog.unblock, org, ada, bea)
+    unlock_channel = plain(unlocked.sent)
+    assert "Sent in a DM" in unlock_channel
+    assert "Ada" not in unlock_channel and "Bea" not in unlock_channel
+    assert "can be matched again" in plain(org.sent[before_unlock:])
     cleared = await invoke(cog, SecretSantaCog.blocks, org)
     assert "No organizer locks" in plain(cleared.sent)
 
@@ -453,7 +468,9 @@ async def test_one_event_exercises_every_feature(db):
     assert "finished" in plain(finished.sent).lower()
     await invoke(cog, SecretSantaCog.create, org, name="Next year")
     carried = await invoke(cog, SecretSantaCog.carrylocks, org)
-    assert "no organizer locks" in plain(carried.sent).lower()
+    assert "Sent in a DM" in plain(carried.sent)
+    assert "Ada" not in plain(carried.sent) and "Bea" not in plain(carried.sent)
+    assert "no organizer locks" in plain(org.sent[-1:]).lower()
     again = await invoke(cog, SecretSantaCog.join, ada)
     assert "Past matches in this server" in inbox(ada)
     assert "Tutorial ·" not in inbox(ada)

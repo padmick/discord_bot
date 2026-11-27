@@ -119,12 +119,20 @@ class EventService:
         event = self.db.create_event(guild_id, cleaned, organizer_id)
         message = f"**Created {label(cleaned, 'Secret Santa')}.** The organizer is not in the draw until they join."
         locks = self._finished_locks(guild_id)
+        lock_notice = ""
         if locks:
-            message += (
-                f"\nLast time these pairs were locked: {_lock_phrase(locks)}. "
+            message += "\nLast year's locked pairs are in your DMs."
+            lock_notice = (
+                f"Last time these pairs were locked: {_lock_phrase(locks)}. "
                 "`s!carrylocks` keeps them. `s!unblock` drops one after that."
             )
-        return success(message, event_id=event["id"], event=event, carried_locks=locks)
+        return success(
+            message,
+            event_id=event["id"],
+            event=event,
+            carried_locks=locks,
+            lock_notice=lock_notice,
+        )
 
     def join(self, guild_id: str, user_id: str, name: str) -> Result:
         self.close_expired_signups(date.today())
@@ -546,7 +554,14 @@ class EventService:
             message += " Names are already out, so this applies if the matches are drawn again."
         return success(message, skipped=saved)
 
-    def unexclude(self, guild_id: str, user_id: str, other_id: str, other_name: str = "") -> Result:
+    def unexclude(
+        self,
+        guild_id: str,
+        user_id: str,
+        other_id: str,
+        other_name: str = "",
+        actor_name: str = "",
+    ) -> Result:
         event = self._open(guild_id)
         if isinstance(event, Result):
             return event
@@ -556,9 +571,13 @@ class EventService:
             return failure("not_joined", "Join the Secret Santa first.")
         removed = self.db.remove_exclusion_pair(event["id"], user_id, str(other_id))
         if removed == "locked":
+            who = label(actor_name, "Someone")
+            other = label(other_name, "Someone")
             return failure(
                 "locked",
                 "The organizer kept this pair apart. Ask them to remove the lock.",
+                organizer_id=str(event["organizer_id"]),
+                organizer_notice=f"**{who}** tried to remove the lock with **{other}**. The lock stays.",
             )
         if removed != "removed":
             return failure("missing_exclusion", "They aren't on your past-match list.")

@@ -242,6 +242,9 @@ class SecretSantaCog(commands.Cog):
             setup_card(event, result.message),
             view=SetupView(str(ctx.guild.id), str(ctx.author.id)),
         )
+        notice = str((result.data or {}).get("lock_notice") or "")
+        if notice and not await self._dm_user(str(ctx.author.id), notice):
+            await _say(ctx, "I couldn't DM you the locked pairs. Allow DMs from server members.")
 
     @commands.hybrid_command(name="setup", help="Open the event setup guide again")
     @commands.guild_only()
@@ -460,7 +463,10 @@ class SecretSantaCog(commands.Cog):
     @commands.hybrid_command(
         name="unexclude",
         aliases=["unskip", "include"],
-        help="Let a past match be paired with you again",
+        help=(
+            "Let a past match be paired with you again\n"
+            "An organizer lock stays. Those names go to the organizer's DM."
+        ),
     )
     @commands.guild_only()
     async def unexclude(self, ctx, member: discord.Member):
@@ -471,8 +477,21 @@ class SecretSantaCog(commands.Cog):
             str(ctx.author.id),
             str(member.id),
             member.display_name,
+            getattr(ctx.author, "display_name", "") or "",
         )
-        await _show(ctx, result)
+        if result.code != "locked":
+            await _show(ctx, result)
+            return
+        await _delete_invocation(ctx)
+        data = result.data or {}
+        notice = str(data.get("organizer_notice") or "")
+        organizer_id = str(data.get("organizer_id") or "")
+        if organizer_id and organizer_id != str(ctx.author.id):
+            if notice:
+                await self._dm_user(organizer_id, notice)
+            await self._private(ctx, result.message, ephemeral=True)
+            return
+        await self._private(ctx, notice or result.message, ephemeral=True)
 
     @commands.hybrid_command(
         name="block",
@@ -500,7 +519,13 @@ class SecretSantaCog(commands.Cog):
         )
         await self._after_roster_change(ctx, result, "BLOCK", private=True)
 
-    @commands.hybrid_command(name="carrylocks", help="Copy organizer locks from the last event")
+    @commands.hybrid_command(
+        name="carrylocks",
+        help=(
+            "Copy organizer locks from the last event\n"
+            "The names go to your DM. The server only sees that a DM was sent."
+        ),
+    )
     @commands.guild_only()
     async def carrylocks(self, ctx):
         """Copy organizer locks from the last event."""
@@ -510,12 +535,19 @@ class SecretSantaCog(commands.Cog):
             str(ctx.author.id),
             _is_admin(ctx),
         )
-        await self._after_roster_change(ctx, result, "CARRY")
+        await self._after_roster_change(ctx, result, "CARRY", private=True)
 
-    @commands.hybrid_command(name="unblock", help="Remove an organizer lock between two people")
+    @commands.hybrid_command(
+        name="unblock",
+        help=(
+            "Remove an organizer lock between two people\n"
+            "The names go to your DM. The server only sees that a DM was sent."
+        ),
+    )
     @commands.guild_only()
     async def unblock(self, ctx, first: discord.Member, second: discord.Member):
         """Remove an organizer lock between two people."""
+        await _delete_invocation(ctx)
         result = await self.run(
             self.service.unblock_pair,
             str(ctx.guild.id),
@@ -526,7 +558,7 @@ class SecretSantaCog(commands.Cog):
             first.display_name,
             second.display_name,
         )
-        await _show(ctx, result)
+        await self._private(ctx, result.message, ephemeral=True)
 
     @commands.hybrid_command(name="blocks", help="DM the pairs the organizer locked apart")
     @commands.guild_only()
@@ -1045,6 +1077,16 @@ class SecretSantaCog(commands.Cog):
 
     async def _dm_assignment(self, note: dict) -> bool:
         return await self._dm_card(note["giver_id"], _match_card(note), reply_as="giftee")
+
+    async def _dm_user(self, user_id: str, text: str) -> bool:
+        user = await self._user(user_id)
+        if user is None or not text:
+            return False
+        try:
+            await user.send(text)
+            return True
+        except discord.Forbidden:
+            return False
 
     async def post_open_announcement(self, guild_id: str, actor_id: str, is_admin: bool, channel) -> tuple[bool, str]:
         result = await self.run(

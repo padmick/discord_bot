@@ -1126,8 +1126,11 @@ def test_past_matches_locks_and_unshipped_names_stay_separate():
     assert svc.finish("guild", "org", False).ok
 
     created = svc.create_event("guild", "org", "Year Two")
-    assert "s!carrylocks" in created.message
-    assert "Ada" in created.message and "Bea" in created.message
+    assert "Ada" not in created.message and "Bea" not in created.message
+    assert "in your DMs" in created.message
+    notice = created.data["lock_notice"]
+    assert "s!carrylocks" in notice
+    assert "Ada" in notice and "Bea" in notice
     joined = svc.join("guild", "11", "Ada")
     expected = {receiver for giver, receiver in drawn.items() if giver == "11"}
     expected.update(giver for giver, receiver in drawn.items() if receiver == "11")
@@ -1144,7 +1147,11 @@ def test_past_matches_locks_and_unshipped_names_stay_separate():
     carried = svc.carry_locks("guild", "org", False)
     assert carried.ok
     assert ("11", "22") in database.list_exclusions(second_id)
-    assert svc.unexclude("guild", "11", "22", "Bea").code == "locked"
+    refused = svc.unexclude("guild", "11", "22", "Bea", "Ada")
+    assert refused.code == "locked"
+    assert "Ada" not in refused.message and "Bea" not in refused.message
+    assert "Ada" in refused.data["organizer_notice"] and "Bea" in refused.data["organizer_notice"]
+    assert refused.data["organizer_id"] == "org"
     assert svc.carry_locks("guild", "11", False).code == "forbidden"
 
 
@@ -2245,6 +2252,132 @@ async def test_block_keeps_the_names_out_of_the_server_channel():
     assert bots.message.deleted is True
     assert bots.sent[0][0] == "Pick two people. Bots are not in the draw."
     assert "Helper" not in bots.sent[0][0]
+
+
+def _channel_text(sent) -> str:
+    chunks = []
+    for content, kwargs in sent:
+        chunks.append(content or "")
+        embed = kwargs.get("embed")
+        if embed is None:
+            continue
+        chunks.append(embed.title or "")
+        chunks.append(embed.description or "")
+    return "\n".join(chunks)
+
+
+async def test_lock_names_reach_only_the_organizer_dm():
+    from cogs.secret_santa import SecretSantaCog
+
+    svc, _database = service()
+    people = {
+        "101": SimpleNamespace(id="101", display_name="Organizer", sent=[]),
+        "111": SimpleNamespace(id="111", display_name="Ada", sent=[]),
+        "222": SimpleNamespace(id="222", display_name="Bea", sent=[]),
+    }
+
+    async def send(person, content=None, **kwargs):
+        del kwargs
+        person.sent.append(content or "")
+
+    for person in people.values():
+        person.send = lambda content=None, person=person, **kwargs: send(person, content, **kwargs)
+        person.bot = False
+        person.guild_permissions = SimpleNamespace(administrator=person.id == "101")
+
+    class Bot:
+        def get_user(self, snowflake):
+            return people.get(str(snowflake))
+
+        async def fetch_user(self, snowflake):
+            return self.get_user(snowflake)
+
+    class Invocation:
+        def __init__(self):
+            self.deleted = False
+
+        async def delete(self):
+            self.deleted = True
+
+    class Ctx:
+        def __init__(self, author):
+            self.guild = SimpleNamespace(id="9001")
+            self.author = author
+            self.interaction = None
+            self.message = Invocation()
+            self.sent = []
+
+        async def send(self, content=None, **kwargs):
+            self.sent.append((content or "", kwargs))
+
+    cog = SecretSantaCog.__new__(SecretSantaCog)
+    cog.service = svc
+    cog.bot = Bot()
+
+    async def run(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    async def _dm_assignment(note):
+        assert "block" not in match_text(
+            {
+                "name": note["receiver_name"],
+                "wishlist": note.get("wishlist"),
+                "address": note.get("address"),
+                "digital_only": note.get("digital_only"),
+            }
+        ).lower()
+        return True
+
+    cog.run = run
+    cog._dm_assignment = _dm_assignment
+
+    assert svc.create_event("9001", "101", "Year One").ok
+    for user_id, name in (("111", "Ada"), ("222", "Bea"), ("333", "Cara"), ("444", "Dee")):
+        ready_participant(svc, "9001", user_id, name)
+    assert svc.block_pair("9001", "101", True, "111", "Ada", "222", "Bea").ok
+    assert svc.start("9001", "101", True).ok
+    assert svc.finish("9001", "101", True).ok
+
+    created = Ctx(people["101"])
+    await SecretSantaCog.create.callback(cog, created, name="Year Two")
+    shown = _channel_text(created.sent)
+    assert "Last year's locked pairs are in your DMs." in shown
+    assert "Ada" not in shown and "Bea" not in shown
+    private = " ".join(people["101"].sent)
+    assert "Last time these pairs were locked: Ada and Bea." in private
+    assert "s!carrylocks" in private
+
+    carried = Ctx(people["101"])
+    await SecretSantaCog.carrylocks.callback(cog, carried)
+    carried_channel = _channel_text(carried.sent)
+    assert carried_channel == "**Sent in a DM.**"
+    assert "Ada" not in carried_channel and "Bea" not in carried_channel
+    assert "**Carried Ada and Bea.**" in people["101"].sent[-1]
+    assert svc.join("9001", "111", "Ada").ok
+
+    ada = people["111"]
+    refused = Ctx(ada)
+    await SecretSantaCog.unexclude.callback(cog, refused, SimpleNamespace(id="222", display_name="Bea", bot=False))
+    refused_channel = _channel_text(refused.sent)
+    assert refused.message.deleted is True
+    assert refused_channel == "**Sent in a DM.**"
+    assert "Ada" not in refused_channel and "Bea" not in refused_channel
+    assert ada.sent[-1] == "The organizer kept this pair apart. Ask them to remove the lock."
+    assert "Bea" not in ada.sent[-1]
+    assert people["101"].sent[-1] == "**Ada** tried to remove the lock with **Bea**. The lock stays."
+
+    unlocked = Ctx(people["101"])
+    await SecretSantaCog.unblock.callback(
+        cog,
+        unlocked,
+        SimpleNamespace(id="111", display_name="Ada", bot=False),
+        SimpleNamespace(id="222", display_name="Bea", bot=False),
+    )
+    unlock_channel = _channel_text(unlocked.sent)
+    assert unlocked.message.deleted is True
+    assert unlock_channel == "**Sent in a DM.**"
+    assert "Ada" not in unlock_channel and "Bea" not in unlock_channel
+    assert "**Ada and Bea** can be matched again." in people["101"].sent[-1]
 
 
 def test_rate_limiter_window_and_disabled_mode():

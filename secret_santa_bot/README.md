@@ -70,20 +70,20 @@ The process listens on `0.0.0.0:8080`. `/` and `/health` return 200 when the dat
 
 Server management (organizer or a server admin):
 
-- `s!create [name]` - Create an event and open the setup guide. The organizer is not enrolled.
+- `s!create [name]` - Create an event and open the setup guide. The organizer is not enrolled. If last year's locks exist, the setup card does not name them. Those names go to the organizer's DM.
 - `s!setup` - Open that guide again: signup date, gift deadline, spending cap, and rules. The form shows the saved lines and writes only the ones you change. Block a match on that guide locks two people the same private way as `s!block`.
 - `s!announce #channel` - Post in that channel that signup is open and how to join. The setup guide has the same channel menu.
 - `s!lock` / `s!unlock` - Close or reopen signup.
 - `s!deadline YYYY-MM-DD` - Set the gift deadline.
 - `s!signupby YYYY-MM-DD` - Set the last day people can join. `s!signupby clear` removes it. After that day, signup closes.
 - `s!waiting` - DM the organizer who has not shipped. The list has names only, not their match.
-- `s!carrylocks` - Copy organizer locks from the last finished event in this server. `s!unblock` drops one.
+- `s!carrylocks` - Copy organizer locks from the last finished event in this server. The names go to the organizer's DM. The channel only says a DM was sent. `s!unblock` drops one the same way.
 - `s!start` - Draw matches and DM them. No preview is sent.
 - `s!reveal reveal` - DM the organizer the full draw. This breaks anonymity.
 - `s!finish` - Archive a drawn event so another can be created.
 - `s!cancel` - Delete this server's open event.
 - `s!remove @member` - Remove someone. After the draw, the seat is redrawn.
-- `s!block @person @person` - Keep two people from being matched. The names are sent by DM, the command message is removed, and the channel only says a DM was sent. The setup guide's Block a match button does the same thing. They cannot remove this. If the draw already paired them, it changes as few matches as it can. `s!unblock` removes the lock. `s!blocks` DMs the list.
+- `s!block @person @person` - Keep two people from being matched. The names are sent by DM, the command message is removed, and the channel only says a DM was sent. The setup guide's Block a match button does the same thing. They cannot remove this. If the draw already paired them, it changes as few matches as it can. `s!unblock` removes the lock and DMs the names the same way. `s!blocks` DMs the list.
 - `s!cap <text>` - Set a spending cap for the event. It shows on a match when that person has not set their own. `s!cap clear` removes it.
 - `s!rules <text>` - Add a short note to the welcome DM and the match. `s!rules clear` removes it.
 - `s!settings` - Choose profile and shipping reminders, the days between them, and how early shipping reminders start.
@@ -100,7 +100,7 @@ Participants:
 - `s!setwishlist <text>` / `s!setaddress <text>` / `s!setbudget <text>` - In a server channel, the command message is deleted. The spending limit is optional.
 - `s!setwindow <text>` - Optional. Tell your giver when a package can arrive, or when you are away. `s!setwindow clear` removes it. In a server channel, the command message is deleted.
 - `s!myinfo` - DM your profile.
-- `s!exclude @member` (also `s!skip`) / `s!unexclude @member` (also `s!unskip` and `s!include`) - Skip someone you were paired with before. They do not have to have joined. `/profile` in the server has the same menu. In a DM, the bot points you back to that menu.
+- `s!exclude @member` (also `s!skip`) / `s!unexclude @member` (also `s!unskip` and `s!include`) - Skip someone you were paired with before. They do not have to have joined. `/profile` in the server has the same menu. In a DM, the bot points you back to that menu. If the pair is an organizer lock, the channel does not name them. The person is told to ask the organizer, and the names go to the organizer's DM.
 - `s!match` and `s!partnerinfo` - DM your match again.
 - `s!message gifter <text>` / `s!message giftee <text>` - Emoji and GIF links stay in the note. A direct GIF or image link, or a picture attached to a prefix command, shows in the note.
 - `s!notes` - DM the latest anonymous note in each direction again. Names stay out of the copy.
