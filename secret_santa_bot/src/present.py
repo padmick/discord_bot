@@ -214,7 +214,8 @@ def guide_fields() -> tuple[Field, ...]:
             "`s!announce` posts how to join in a channel you choose. "
             "`s!lock`, `s!deadline`, and `s!settings` are optional. `s!signupby` is the last day to join. "
             "`s!settings` chooses which reminders go out and how many days apart.\n"
-            "`s!block` keeps two people apart. `s!carrylocks` copies last year's locks. "
+            "`s!block` keeps two people apart. The names stay in the organizer's DM. "
+            "`s!carrylocks` copies last year's locks the same way. "
             "`s!cap` sets a spending cap. `s!rules` adds a short note.\n"
             "`s!waiting` names who has not shipped, without the match.\n"
             "`s!finish` archives a drawn event so another can be created.",
